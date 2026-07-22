@@ -1440,6 +1440,96 @@ async def get_symbol_primitives(ctx: Context, library_path: str = "", symbol_nam
     return json.dumps(result, indent=2) if not isinstance(result, str) else result
 
 @mcp.tool()
+async def get_component_library_source(ctx: Context, cmp_designators: list) -> str:
+    """
+    Diagnostic tool: report each schematic component's library link fields
+    (LibReference, SourceLibraryName). Use this to inspect why a component
+    fails to resolve during Update PCB Document - e.g. to compare a working
+    component against one whose Properties panel shows Source = "Altium
+    Content Vault", before attempting to relink it with
+    set_component_library_source.
+
+    Args:
+        cmp_designators (list): List of designators of the components (e.g., ["R1", "C5", "U3"])
+
+    Returns:
+        str: JSON array, one entry per component with designator,
+             lib_reference, and source_library_name (empty string if unset).
+             Components not found on any open schematic are omitted; check
+             the response length against the request if some are missing.
+    """
+    logger.info(f"Getting library source info for components: {cmp_designators}")
+
+    response = await altium_bridge.execute_command(
+        "get_component_library_source",
+        {"designators": cmp_designators}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting component library source: {error_msg}")
+        return json.dumps({"error": f"Failed to get component library source: {error_msg}"})
+
+    result = response.get("result", [])
+    if not result:
+        logger.info(f"No library source data found for designators: {cmp_designators}")
+        return json.dumps({"message": "No library source data found for the specified components"})
+
+    logger.info(f"Retrieved library source info for components")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def set_component_library_source(ctx: Context, cmp_designators: list, library_path: str, lib_reference: str = "") -> str:
+    """
+    EXPERIMENTAL: Relink schematic components away from a managed source
+    (e.g. Altium Content Vault) to a local file-based library, by writing
+    SourceLibraryName (and optionally LibReference) directly on the placed
+    ISch_Component instances.
+
+    This targets the specific failure where Properties panel shows
+    Source = "Altium Content Vault" for a component, and Update PCB
+    Document fails with "Component not found in available libraries"
+    because the compile step re-validates against the unreachable vault
+    link. Run get_component_library_source first to confirm the current
+    field values, and be ready for this to fail outright (a clean Altium
+    script error, not data corruption) if the underlying API does not
+    expose these fields as writable for managed components.
+
+    Args:
+        cmp_designators (list): List of designators to relink (e.g., ["C1", "C6", "C13"])
+        library_path (str): Full path to the local .SchLib file that now owns
+            these components (e.g. the library produced by Design > Make
+            Schematic Library + Tools > Clear Server Links).
+        lib_reference (str): New LibReference name to set on every listed
+            component. Leave empty to keep each component's existing
+            LibReference (use this when Make Schematic Library preserved
+            the original names).
+
+    Returns:
+        str: JSON object with a per-designator success/error breakdown, so
+             partial failures are visible rather than silently skipped.
+    """
+    logger.info(f"Setting library source for components: {cmp_designators} -> {library_path}")
+
+    response = await altium_bridge.execute_command(
+        "set_component_library_source",
+        {
+            "designators": cmp_designators,
+            "library_path": library_path,
+            "lib_reference": lib_reference
+        }
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error setting component library source: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to set component library source: {error_msg}"})
+
+    result = response.get("result", {})
+    logger.info(f"Set library source complete")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
 async def get_all_nets(ctx: Context) -> str:
     """
     Return every unique net name in the active PCB document.

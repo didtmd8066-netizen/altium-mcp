@@ -168,7 +168,9 @@ begin
     begin
         DocumentKind := 'PCBLIB';
     end
-    else if (CommandName = 'get_schematic_data')             then
+    else if (CommandName = 'get_schematic_data')              or
+            (CommandName = 'get_component_library_source')   or
+            (CommandName = 'set_component_library_source')   then
     begin
         DocumentKind := 'SCH';
     end
@@ -565,7 +567,7 @@ begin
         OutputLines := TStringList.Create;
         try
             OutputLines.Text := BuildJSONObject(ResultProps);
-            Result := WriteJSONToFile(OutputLines, ROOT_DIR);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR+'\temp_output_job_containers.json');
         finally
             OutputLines.Free;
         end;
@@ -762,7 +764,7 @@ begin
         OutputLines := TStringList.Create;
         try
             OutputLines.Text := BuildJSONObject(ResultProps);
-            Result := WriteJSONToFile(OutputLines, ROOT_DIR);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR+'\temp_run_output_jobs.json');
         finally
             OutputLines.Free;
         end;

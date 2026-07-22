@@ -83,6 +83,126 @@ begin
     end;
 end;
 
+// Extract the get component library source logic
+function ExecuteGetComponentLibrarySource(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i: Integer;
+    DesignatorsList: TStringList;
+begin
+    DesignatorsList := TStringList.Create;
+    try
+        // Look through all the RequestData lines to find designators
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"designators"', RequestData[i]) > 0) then
+            begin
+                // Found the designators parameter
+                // Parse the array in the next lines
+                i := i + 1; // Move to the next line (should be '[')
+
+                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+                begin
+                    // This is an array element
+                    ParamValue := RequestData[i];
+                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                    ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
+                    ParamValue := Trim(ParamValue);
+
+                    if (ParamValue <> '') and (ParamValue <> '[') then
+                        DesignatorsList.Add(ParamValue);
+
+                    i := i + 1;
+                end;
+
+                break;
+            end;
+        end;
+
+        if DesignatorsList.Count > 0 then
+        begin
+            Result := GetComponentLibrarySource(ROOT_DIR, DesignatorsList);
+        end
+        else
+        begin
+            ShowMessage('Error: No designators found for get_component_library_source');
+            Result := '';
+        end;
+    finally
+        DesignatorsList.Free;
+    end;
+end;
+
+// Extract the set component library source logic
+function ExecuteSetComponentLibrarySource(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i, ValueStart: Integer;
+    DesignatorsList: TStringList;
+    LibraryPath: String;
+    LibReference: String;
+begin
+    DesignatorsList := TStringList.Create;
+    LibraryPath := '';
+    LibReference := '';
+
+    try
+        // Parse parameters from the request
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            // Look for designators array
+            if (Pos('"designators"', RequestData[i]) > 0) then
+            begin
+                // Parse the array in the next lines
+                i := i + 1; // Move to the next line (should be '[')
+
+                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+                begin
+                    ParamValue := RequestData[i];
+                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                    ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
+                    ParamValue := Trim(ParamValue);
+
+                    if (ParamValue <> '') and (ParamValue <> '[') then
+                        DesignatorsList.Add(ParamValue);
+
+                    i := i + 1;
+                end;
+            end
+            // Look for library_path
+            else if (Pos('"library_path"', RequestData[i]) > 0) then
+            begin
+                ValueStart := Pos(':', RequestData[i]) + 1;
+                ParamValue := Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1);
+                ParamValue := TrimJSON(ParamValue);
+                LibraryPath := ParamValue;
+            end
+            // Look for lib_reference
+            else if (Pos('"lib_reference"', RequestData[i]) > 0) then
+            begin
+                ValueStart := Pos(':', RequestData[i]) + 1;
+                ParamValue := Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1);
+                ParamValue := TrimJSON(ParamValue);
+                LibReference := ParamValue;
+            end;
+        end;
+
+        if (DesignatorsList.Count > 0) and (LibraryPath <> '') then
+        begin
+            Result := SetComponentLibrarySource(DesignatorsList, LibraryPath, LibReference);
+        end
+        else
+        begin
+            if DesignatorsList.Count = 0 then
+                Result := '{"success": false, "error": "No designators provided"}'
+            else
+                Result := '{"success": false, "error": "No library_path provided"}';
+        end;
+    finally
+        DesignatorsList.Free;
+    end;
+end;
+
 // Extract the create net class logic
 function ExecuteCreateNetClass(RequestData: TStringList): String;
 var
@@ -1020,7 +1140,11 @@ begin
     // Direct command execution based on the command name
     case CommandName of
         'get_component_pins':
-            Result := ExecuteGetComponentPins(RequestData);            
+            Result := ExecuteGetComponentPins(RequestData);
+        'get_component_library_source':
+            Result := ExecuteGetComponentLibrarySource(RequestData);
+        'set_component_library_source':
+            Result := ExecuteSetComponentLibrarySource(RequestData);
         'get_all_nets':
             Result := GetAllNets(ROOT_DIR);            
         'create_net_class':

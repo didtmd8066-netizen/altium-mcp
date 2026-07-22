@@ -1299,6 +1299,233 @@ begin
     end;
 end;
 
+// Diagnostic: report LibReference and SourceLibraryName for the given
+// designators, across all open SCH documents in the focused project.
+// Used to inspect why a component's Properties panel shows a managed
+// Source (e.g. "Altium Content Vault") before attempting to relink it.
+function GetComponentLibrarySource(ROOT_DIR: String; DesignatorsList: TStringList): String;
+var
+    Project     : IProject;
+    Doc         : IDocument;
+    CurrentSch  : ISch_Document;
+    Iterator    : ISch_Iterator;
+    Component   : ISch_Component;
+    ResultArray : TStringList;
+    CompProps   : TStringList;
+    OutputLines : TStringList;
+    i           : Integer;
+    TargetSet   : TStringList;
+    SourceLib   : String;
+begin
+    Result := '';
+
+    Project := GetWorkspace.DM_FocusedProject;
+    If (Project = Nil) Then
+    begin
+        Result := 'ERROR: No project is currently open';
+        Exit;
+    end;
+
+    TargetSet := TStringList.Create;
+    TargetSet.Assign(DesignatorsList);
+
+    ResultArray := TStringList.Create;
+    try
+        For i := 0 to Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(i);
+            If Doc.DM_DocumentKind = 'SCH' Then
+            Begin
+                Client.OpenDocument('SCH', Doc.DM_FullPath);
+                CurrentSch := SchServer.GetSchDocumentByPath(Doc.DM_FullPath);
+
+                If (CurrentSch <> Nil) Then
+                Begin
+                    Iterator := CurrentSch.SchIterator_Create;
+                    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+
+                    Component := Iterator.FirstSchObject;
+                    While (Component <> Nil) Do
+                    Begin
+                        If (TargetSet.IndexOf(Component.Designator.Text) >= 0) Then
+                        Begin
+                            CompProps := TStringList.Create;
+                            try
+                                AddJSONProperty(CompProps, 'designator', Component.Designator.Text);
+                                AddJSONProperty(CompProps, 'sheet', Doc.DM_FullPath);
+                                AddJSONProperty(CompProps, 'lib_reference', Component.LibReference);
+
+                                // SourceLibraryName may be blank for components that
+                                // were never explicitly bound to a physical library file
+                                try
+                                    SourceLib := Component.SourceLibraryName;
+                                except
+                                    SourceLib := 'ERROR_READING_SourceLibraryName';
+                                end;
+                                AddJSONProperty(CompProps, 'source_library_name', SourceLib);
+
+                                try
+                                    SourceLib := Component.DesignItemId;
+                                except
+                                    SourceLib := 'ERROR_READING_DesignItemId';
+                                end;
+                                AddJSONProperty(CompProps, 'design_item_id', SourceLib);
+
+                                ResultArray.Add(BuildJSONObject(CompProps, 1));
+                            finally
+                                CompProps.Free;
+                            end;
+                        End;
+
+                        Component := Iterator.NextSchObject;
+                    End;
+
+                    CurrentSch.SchIterator_Destroy(Iterator);
+                End;
+            End;
+        End;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(ResultArray);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR+'temp_component_library_source.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultArray.Free;
+        TargetSet.Free;
+    end;
+end;
+
+// EXPERIMENTAL: relink the given designators' SourceLibraryName (and
+// optionally LibReference) to a local library. If SourceLibraryName is not
+// actually a writable field for managed/vault components, this will raise
+// an exception per-component, which is caught and reported rather than
+// left to fail the whole batch.
+function SetComponentLibrarySource(DesignatorsList: TStringList; LibraryPath: String; NewLibReference: String): String;
+var
+    Project      : IProject;
+    Doc          : IDocument;
+    CurrentSch   : ISch_Document;
+    Iterator     : ISch_Iterator;
+    Component    : ISch_Component;
+    ResultArray  : TStringList;
+    ItemProps    : TStringList;
+    OutputLines  : TStringList;
+    i            : Integer;
+    TargetSet, HandledSet : TStringList;
+    SuccessCount : Integer;
+begin
+    Result := '';
+
+    Project := GetWorkspace.DM_FocusedProject;
+    If (Project = Nil) Then
+    begin
+        Result := 'ERROR: No project is currently open';
+        Exit;
+    end;
+
+    TargetSet := TStringList.Create;
+    TargetSet.Assign(DesignatorsList);
+    HandledSet := TStringList.Create;
+    ResultArray := TStringList.Create;
+    SuccessCount := 0;
+
+    try
+        For i := 0 to Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(i);
+            If Doc.DM_DocumentKind = 'SCH' Then
+            Begin
+                Client.OpenDocument('SCH', Doc.DM_FullPath);
+                CurrentSch := SchServer.GetSchDocumentByPath(Doc.DM_FullPath);
+
+                If (CurrentSch <> Nil) Then
+                Begin
+                    Iterator := CurrentSch.SchIterator_Create;
+                    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+
+                    Component := Iterator.FirstSchObject;
+                    While (Component <> Nil) Do
+                    Begin
+                        If (TargetSet.IndexOf(Component.Designator.Text) >= 0) Then
+                        Begin
+                            ItemProps := TStringList.Create;
+                            try
+                                AddJSONProperty(ItemProps, 'designator', Component.Designator.Text);
+
+                                try
+                                    Component.SourceLibraryName := LibraryPath;
+                                    if (NewLibReference <> '') then
+                                        Component.LibReference := NewLibReference;
+
+                                    Component.GraphicallyInvalidate;
+
+                                    AddJSONBoolean(ItemProps, 'success', True);
+                                    SuccessCount := SuccessCount + 1;
+                                except
+                                    AddJSONBoolean(ItemProps, 'success', False);
+                                    AddJSONProperty(ItemProps, 'error', 'Exception while setting SourceLibraryName/LibReference - this field may not be writable for this component');
+                                end;
+
+                                ResultArray.Add(BuildJSONObject(ItemProps, 1));
+                                HandledSet.Add(Component.Designator.Text);
+                            finally
+                                ItemProps.Free;
+                            end;
+                        End;
+
+                        Component := Iterator.NextSchObject;
+                    End;
+
+                    CurrentSch.SchIterator_Destroy(Iterator);
+                    CurrentSch.GraphicallyInvalidate;
+                End;
+            End;
+        End;
+
+        // Report designators that were requested but never found on any open sheet
+        for i := 0 to TargetSet.Count - 1 do
+        begin
+            if (HandledSet.IndexOf(TargetSet[i]) < 0) then
+            begin
+                ItemProps := TStringList.Create;
+                try
+                    AddJSONProperty(ItemProps, 'designator', TargetSet[i]);
+                    AddJSONBoolean(ItemProps, 'success', False);
+                    AddJSONProperty(ItemProps, 'error', 'Designator not found on any open schematic document');
+                    ResultArray.Add(BuildJSONObject(ItemProps, 1));
+                finally
+                    ItemProps.Free;
+                end;
+            end;
+        end;
+
+        ItemProps := TStringList.Create;
+        try
+            AddJSONBoolean(ItemProps, 'success', SuccessCount > 0);
+            AddJSONInteger(ItemProps, 'requested_count', TargetSet.Count);
+            AddJSONInteger(ItemProps, 'success_count', SuccessCount);
+            ItemProps.Add(BuildJSONArray(ResultArray, 'results'));
+
+            OutputLines := TStringList.Create;
+            try
+                OutputLines.Text := BuildJSONObject(ItemProps);
+                Result := OutputLines.Text;
+            finally
+                OutputLines.Free;
+            end;
+        finally
+            ItemProps.Free;
+        end;
+    finally
+        ResultArray.Free;
+        TargetSet.Free;
+        HandledSet.Free;
+    end;
+end;
+
 // Function to get all schematic component data
 function GetSchematicData(ROOT_DIR: String): String;
 var
