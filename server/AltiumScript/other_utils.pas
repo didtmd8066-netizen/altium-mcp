@@ -110,7 +110,7 @@ end;
 
 // Modify the EnsureDocumentFocused function to handle all document types
 // and return more detailed information
-function EnsureDocumentFocused(CommandName: String): Boolean;
+function EnsureDocumentFocused(CommandName: String; ViewTypeOverride: String = ''): Boolean;
 var
     I           : Integer;
     Project     : IProject;
@@ -154,10 +154,18 @@ begin
        (CommandName = 'get_net_connections')                 or
        (CommandName = 'set_component_position')              or
        (CommandName = 'set_pcb_layer_visibility')            or
-       (CommandName = 'get_pcb_layer_stackup')               or
-       (CommandName = 'take_view_screenshot')                then
+       (CommandName = 'get_pcb_layer_stackup')                then
     begin
         DocumentKind := 'PCB';
+    end
+    else if (CommandName = 'take_view_screenshot') then
+    begin
+        // Screenshot target depends on the caller's requested view_type
+        // (defaults to PCB to preserve prior behavior when not provided).
+        if (LowerCase(ViewTypeOverride) = 'sch') then
+            DocumentKind := 'SCH'
+        else
+            DocumentKind := 'PCB';
     end
     else if (CommandName = 'create_schematic_symbol')        or
             (CommandName = 'get_library_symbol_reference')   then
@@ -334,6 +342,56 @@ begin
     end;
     
     Result := False;
+end;
+
+// GetWorkspace.DM_FocusedProject can point at a different project than the
+// one actually open/visible in the schematic editor when multiple projects
+// are loaded in the workspace at once (focus is tracked per-window, not
+// per-document). SCH-scoped commands that blindly trust DM_FocusedProject
+// then silently iterate the wrong project's documents and return empty
+// results even though a schematic document is clearly focused on screen.
+// This resolves the IProject that actually contains the currently active
+// SCH document, falling back to scanning every open workspace project.
+function GetActiveSchProject: IProject;
+var
+    Project    : IProject;
+    ActiveDoc  : ISch_Document;
+    ActivePath : String;
+    i, p       : Integer;
+    Found      : Boolean;
+begin
+    Result := GetWorkspace.DM_FocusedProject;
+
+    if (SchServer = Nil) then Exit;
+    ActiveDoc := SchServer.GetCurrentSchDocument;
+    if (ActiveDoc = Nil) then Exit;
+
+    ActivePath := ActiveDoc.DocumentName;
+
+    Found := False;
+    if (Result <> Nil) then
+    begin
+        for i := 0 to Result.DM_LogicalDocumentCount - 1 do
+            if Result.DM_LogicalDocuments(i).DM_FullPath = ActivePath then
+            begin
+                Found := True;
+                Break;
+            end;
+    end;
+
+    if Found then Exit;
+
+    for p := 0 to GetWorkspace.DM_ProjectCount - 1 do
+    begin
+        Project := GetWorkspace.DM_Projects(p);
+        if Project = Nil then Continue;
+        for i := 0 to Project.DM_LogicalDocumentCount - 1 do
+            if Project.DM_LogicalDocuments(i).DM_FullPath = ActivePath then
+            begin
+                Result := Project;
+                Exit;
+            end;
+    end;
 end;
 
 // Zoom the current PCB view to the union bounding box of the given

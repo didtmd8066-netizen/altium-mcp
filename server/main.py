@@ -766,21 +766,26 @@ async def get_schematic_data(ctx: Context, cmp_designators: list) -> str:
         else:
             schematic_list = schematic_data
         
-        # Filter components by designator
-        components = []
+        # Filter components by designator. An empty/omitted designator list
+        # means "return everything" (full schematic scan) instead of matching
+        # nothing.
         missing_designators = []
-        
-        for designator in cmp_designators:
-            found = False
-            for component in schematic_list:
-                if component.get("designator") == designator:
-                    components.append(component)
-                    found = True
-                    break
-            
-            if not found:
-                missing_designators.append(designator)
-        
+
+        if not cmp_designators:
+            components = schematic_list
+        else:
+            components = []
+            for designator in cmp_designators:
+                found = False
+                for component in schematic_list:
+                    if component.get("designator") == designator:
+                        components.append(component)
+                        found = True
+                        break
+
+                if not found:
+                    missing_designators.append(designator)
+
         result = {
             "components": components,
         }

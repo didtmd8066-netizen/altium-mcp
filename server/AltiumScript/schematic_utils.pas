@@ -1319,7 +1319,7 @@ var
 begin
     Result := '';
 
-    Project := GetWorkspace.DM_FocusedProject;
+    Project := GetActiveSchProject;
     If (Project = Nil) Then
     begin
         Result := 'ERROR: No project is currently open';
@@ -1419,7 +1419,7 @@ var
 begin
     Result := '';
 
-    Project := GetWorkspace.DM_FocusedProject;
+    Project := GetActiveSchProject;
     If (Project = Nil) Then
     begin
         Result := 'ERROR: No project is currently open';
@@ -1550,7 +1550,7 @@ begin
     Result := '';
 
     // Retrieve the current project
-    Project := GetWorkspace.DM_FocusedProject;
+    Project := GetActiveSchProject;
     If (Project = Nil) Then
     begin
         ShowMessage('Error: No project is currently open');

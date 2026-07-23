@@ -1133,10 +1133,30 @@ end;
 
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
+var
+    i, ValueStart : Integer;
+    RequestedViewType : String;
 begin
     Result := '';
-    EnsureDocumentFocused(CommandName);
-    
+
+    // take_view_screenshot needs to know the requested view_type (sch/pcb)
+    // before we decide which document kind to focus.
+    RequestedViewType := '';
+    if (CommandName = 'take_view_screenshot') then
+    begin
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"view_type"', RequestData[i]) > 0) then
+            begin
+                ValueStart := Pos(':', RequestData[i]) + 1;
+                RequestedViewType := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
+                Break;
+            end;
+        end;
+    end;
+
+    EnsureDocumentFocused(CommandName, RequestedViewType);
+
     // Direct command execution based on the command name
     case CommandName of
         'get_component_pins':
