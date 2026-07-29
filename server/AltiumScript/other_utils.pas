@@ -112,7 +112,7 @@ end;
 // and return more detailed information
 function EnsureDocumentFocused(CommandName: String; ViewTypeOverride: String = ''): Boolean;
 var
-    I           : Integer;
+    I, P        : Integer;
     Project     : IProject;
     Doc         : IDocument;
     DocFound    : Boolean;
@@ -145,6 +145,7 @@ begin
        (CommandName = 'get_component_pins')                  or
        (CommandName = 'get_pcb_layers')                      or
        (CommandName = 'get_pcb_rules')                       or
+       (CommandName = 'create_pcb_clearance_rule')           or
        (CommandName = 'get_selected_components_coordinates') or
        (CommandName = 'layout_duplicator')                   or
        (CommandName = 'layout_duplicator_apply')             or
@@ -328,8 +329,60 @@ begin
         End;
     End;
 
-    // TODO: Do I want to iterate through all workspace projects to find valid document if it is not current document?
-    // Could use IWorkspace.DM_ProjectCount and for loop
+    // Fallback: the focused project might not be the one containing the
+    // desired document (multiple projects open in the workspace at once).
+    // Scan every open workspace project for a matching document kind.
+    For P := 0 to GetWorkspace.DM_ProjectCount - 1 Do
+    Begin
+        Project := GetWorkspace.DM_Projects(P);
+        If Project = Nil Then Continue;
+
+        For I := 0 to Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(I);
+            If Doc.DM_DocumentKind = DocumentKind Then
+            Begin
+                DocFound := True;
+                Doc.DM_OpenAndFocusDocument;
+                Sleep(500);
+
+                if DocumentKind = 'PCB' then
+                begin
+                    if PCBServer.GetCurrentPCBBoard <> Nil then
+                    begin
+                        Result := True;
+                        Exit;
+                    end;
+                end
+                else if DocumentKind = 'SCH' then
+                begin
+                    CurrentDoc := SchServer.GetCurrentSchDocument;
+                    if (CurrentDoc <> Nil) then
+                    begin
+                        Result := True;
+                        Exit;
+                    end;
+                end
+                else if DocumentKind = 'SCHLIB' then
+                begin
+                    CurrentDoc := SchServer.GetCurrentSchDocument;
+                    if (CurrentDoc <> Nil) and (CurrentDoc.ObjectID = eSchLib) then
+                    begin
+                        Result := True;
+                        Exit;
+                    end;
+                end
+                else if DocumentKind = 'PCBLIB' then
+                begin
+                    if PCBServer.GetCurrentPCBLibrary <> Nil then
+                    begin
+                        Result := True;
+                        Exit;
+                    end;
+                end;
+            End;
+        End;
+    End;
 
     // No matching document found or couldn't be focused
     if not DocFound then

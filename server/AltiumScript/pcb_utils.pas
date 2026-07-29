@@ -1418,6 +1418,70 @@ begin
     end;
 end;
 
+// Function to create a new Clearance Constraint design rule
+// Gap is NOT a property of the base IPCB_Rule interface - it lives on the
+// IPCB_ClearanceConstraint subtype. PCBRuleFactory's result must be assigned
+// directly to a variable typed as that subtype for DelphiScript to expose
+// .Gap; a generic IPCB_Rule variable will not see it.
+function CreatePCBClearanceRule(RuleName: String; Scope1: String; Scope2: String; GapMM: Double): String;
+var
+    Board       : IPCB_Board;
+    Rule        : IPCB_Rule;
+    RuleClear   : IPCB_ClearanceConstraint;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    if (Board = nil) then
+    begin
+        Result := '{"success": false, "error": "No PCB document is currently active"}';
+        Exit;
+    end;
+
+    ResultProps := TStringList.Create;
+    try
+        PCBServer.PreProcess;
+        try
+            RuleClear := PCBServer.PCBRuleFactory(eRule_Clearance);
+            RuleClear.LayerKind := eRuleLayerKind_SameLayer;
+            RuleClear.NetScope := eNetScope_AnyNet;
+            RuleClear.Gap := MMsToCoord(GapMM);
+
+            if (RuleName <> '') then
+                RuleClear.Name := RuleName;
+            if (Scope1 <> '') then
+                RuleClear.Scope1Expression := Scope1;
+            if (Scope2 <> '') then
+                RuleClear.Scope2Expression := Scope2;
+
+            Rule := RuleClear;
+            Rule.Enabled := True;
+
+            Board.AddPCBObject(Rule);
+            PCBServer.SendMessageToRobots(Board.I_ObjectAddress, c_Broadcast, PCBM_BoardRegisteration, Rule.I_ObjectAddress);
+        finally
+            PCBServer.PostProcess;
+        end;
+
+        Board.ViewManager_FullUpdate;
+
+        AddJSONBoolean(ResultProps, 'success', True);
+        AddJSONProperty(ResultProps, 'descriptor', Rule.Descriptor);
+        AddJSONProperty(ResultProps, 'filter1', Rule.Scope1Expression);
+        AddJSONProperty(ResultProps, 'filter2', Rule.Scope2Expression);
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+    end;
+end;
+
 // Function to get all component data from the PCB
 function GetAllComponentData(ROOT_DIR: String, SelectedOnly: Boolean = False): String;
 var

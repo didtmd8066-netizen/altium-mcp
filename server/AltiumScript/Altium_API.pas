@@ -1022,6 +1022,52 @@ begin
     end;
 end;
 
+// Extract the create PCB clearance rule logic
+function ExecuteCreatePCBClearanceRule(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i, ValueStart: Integer;
+    RuleName: String;
+    Scope1: String;
+    Scope2: String;
+    GapMM: Double;
+begin
+    RuleName := '';
+    Scope1 := '';
+    Scope2 := '';
+    GapMM := 0;
+
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"rule_name"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            RuleName := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
+        end
+        else if (Pos('"scope1"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            Scope1 := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
+        end
+        else if (Pos('"scope2"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            Scope2 := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
+        end
+        else if (Pos('"gap_mm"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            ParamValue := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
+            GapMM := SafeStrToFloat(ParamValue);
+        end;
+    end;
+
+    if (Scope1 <> '') and (Scope2 <> '') then
+        Result := CreatePCBClearanceRule(RuleName, Scope1, Scope2, GapMM)
+    else
+        Result := '{"success": false, "error": "scope1 and scope2 are required"}';
+end;
+
 // Extract the create PCB footprint logic
 function ExecuteCreatePCBFootprint(RequestData: TStringList): String;
 var
@@ -1211,6 +1257,8 @@ begin
             Result := ExecuteLayoutDuplicatorApply(RequestData);            
         'get_pcb_rules':
             Result := GetPCBRules(ROOT_DIR);
+        'create_pcb_clearance_rule':
+            Result := ExecuteCreatePCBClearanceRule(RequestData);
         'get_output_job_containers':
             Result := ExecuteGetOutputJobContainers(RequestData);
         'run_output_jobs':

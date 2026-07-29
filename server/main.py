@@ -2380,6 +2380,42 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
+async def create_pcb_clearance_rule(ctx: Context, scope1: str, scope2: str, gap_mm: float, rule_name: str = "") -> str:
+    """
+    Create a new Clearance Constraint design rule on the current Altium PCB
+
+    Args:
+        scope1 (str): Query expression for the first object scope (e.g., "IsVia")
+        scope2 (str): Query expression for the second object scope (e.g., "IsPad")
+        gap_mm (float): Minimum clearance in millimeters
+        rule_name (str): Optional name for the rule. If omitted, Altium assigns a default name.
+
+    Returns:
+        str: JSON object with the result of the operation
+    """
+    logger.info(f"Creating PCB clearance rule '{rule_name}': ({scope1}) vs ({scope2}), gap={gap_mm}mm")
+
+    response = await altium_bridge.execute_command(
+        "create_pcb_clearance_rule",
+        {
+            "rule_name": rule_name,
+            "scope1": scope1,
+            "scope2": scope2,
+            "gap_mm": gap_mm
+        }
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error creating PCB clearance rule: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to create PCB clearance rule: {error_msg}"})
+
+    result = response.get("result", {})
+
+    logger.info(f"PCB clearance rule created successfully")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
 async def get_pcb_layer_stackup(ctx: Context) -> str:
     """
     Get the detailed layer stackup information from the current Altium PCB including
