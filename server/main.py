@@ -2380,7 +2380,7 @@ async def get_pcb_rules(ctx: Context) -> str:
     return json.dumps(rules_data, indent=2)
 
 @mcp.tool()
-async def create_pcb_clearance_rule(ctx: Context, scope1: str, scope2: str, gap_mm: float, rule_name: str = "") -> str:
+async def create_pcb_clearance_rule(ctx: Context, scope1: str, scope2: str, gap_mm: float, rule_name: str = "", net_scope: str = "AnyNet") -> str:
     """
     Create a new Clearance Constraint design rule on the current Altium PCB
 
@@ -2389,11 +2389,14 @@ async def create_pcb_clearance_rule(ctx: Context, scope1: str, scope2: str, gap_
         scope2 (str): Query expression for the second object scope (e.g., "IsPad")
         gap_mm (float): Minimum clearance in millimeters
         rule_name (str): Optional name for the rule. If omitted, Altium assigns a default name.
+        net_scope (str): "AnyNet" (default), "DifferentNetsOnly", or "SameNetOnly".
+            Clearance rules almost always want "DifferentNetsOnly" - same-net copper is
+            expected to touch/overlap, so checking clearance on it is usually not meaningful.
 
     Returns:
         str: JSON object with the result of the operation
     """
-    logger.info(f"Creating PCB clearance rule '{rule_name}': ({scope1}) vs ({scope2}), gap={gap_mm}mm")
+    logger.info(f"Creating PCB clearance rule '{rule_name}': ({scope1}) vs ({scope2}), gap={gap_mm}mm, net_scope={net_scope}")
 
     response = await altium_bridge.execute_command(
         "create_pcb_clearance_rule",
@@ -2401,7 +2404,8 @@ async def create_pcb_clearance_rule(ctx: Context, scope1: str, scope2: str, gap_
             "rule_name": rule_name,
             "scope1": scope1,
             "scope2": scope2,
-            "gap_mm": gap_mm
+            "gap_mm": gap_mm,
+            "net_scope": net_scope
         }
     )
 
@@ -2447,6 +2451,131 @@ async def get_pcb_layer_stackup(ctx: Context) -> str:
     
     logger.info(f"Retrieved PCB layer stackup data")
     return json.dumps(stackup_data, indent=2)
+
+@mcp.tool()
+async def get_current_pcblib_footprint_info(ctx: Context) -> str:
+    """
+    Get the primitive composition and overall bounding box (in mm) of whichever
+    footprint is currently open/focused in the active PCB library (.PcbLib) document.
+
+    Returns:
+        str: JSON object with footprint_name, per-primitive-type counts
+             (track_count, arc_count, region_count, fill_count, text_count,
+             pad_count, via_count, component_body_count, other_count), and
+             bbox_min_x_mm/bbox_min_y_mm/bbox_max_x_mm/bbox_max_y_mm/
+             bbox_width_mm/bbox_height_mm
+    """
+    logger.info("Getting current PCB library footprint info")
+
+    response = await altium_bridge.execute_command(
+        "get_current_pcblib_footprint_info",
+        {}  # No parameters needed
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting current PCB library footprint info: {error_msg}")
+        return json.dumps({"error": f"Failed to get current PCB library footprint info: {error_msg}"})
+
+    info_data = response.get("result", {})
+    logger.info(f"Retrieved current PCB library footprint info")
+    return json.dumps(info_data, indent=2)
+
+@mcp.tool()
+async def scale_current_pcblib_footprint(ctx: Context, scale_factor: float) -> str:
+    """
+    Uniformly scale every primitive of the footprint currently open/focused in
+    the active PCB library (.PcbLib) document, around its origin (0,0).
+
+    Handles Track, Arc, Region (silkscreen/logo artwork outlines), Pad, Via
+    and Text primitives. Fill and ComponentBody primitives are left untouched
+    (their counts are reported separately so the caller can handle them
+    manually if present).
+
+    Args:
+        scale_factor (float): Multiplier applied to all coordinates/sizes,
+            e.g. 0.6667 to shrink a 6mm feature down to 4mm (4/6).
+
+    Returns:
+        str: JSON object with footprint_name, scale_factor, scaled_count,
+             skipped_count, and the resulting bbox_width_mm/bbox_height_mm
+    """
+    logger.info(f"Scaling current PCB library footprint by factor {scale_factor}")
+
+    response = await altium_bridge.execute_command(
+        "scale_current_pcblib_footprint",
+        {"scale_factor": scale_factor}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error scaling current PCB library footprint: {error_msg}")
+        return json.dumps({"error": f"Failed to scale current PCB library footprint: {error_msg}"})
+
+    result_data = response.get("result", {})
+    logger.info(f"Scaled current PCB library footprint")
+    return json.dumps(result_data, indent=2)
+
+@mcp.tool()
+async def get_selected_tracks_and_arcs(ctx: Context) -> str:
+    """
+    Get the exact geometry (in mm) of every currently-selected Track and Arc
+    primitive on the active PCB document.
+
+    Returns:
+        str: JSON object with track_count, arc_count, and:
+             - tracks: [{layer, x1_mm, y1_mm, x2_mm, y2_mm, width_mm}, ...]
+             - arcs: [{layer, x_center_mm, y_center_mm, radius_mm,
+                       start_angle_deg, end_angle_deg, line_width_mm}, ...]
+    """
+    logger.info("Getting selected tracks and arcs")
+
+    response = await altium_bridge.execute_command(
+        "get_selected_tracks_and_arcs",
+        {}  # No parameters needed
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting selected tracks and arcs: {error_msg}")
+        return json.dumps({"error": f"Failed to get selected tracks and arcs: {error_msg}"})
+
+    result_data = response.get("result", {})
+    logger.info(f"Retrieved selected tracks and arcs")
+    return json.dumps(result_data, indent=2)
+
+@mcp.tool()
+async def apply_track_edits(ctx: Context, edits: list) -> str:
+    """
+    Precisely edit specific currently-SELECTED Track primitives on the active
+    PCB document by exact coordinate match, e.g. to move part of a board
+    outline/keepout by an exact computed offset without risking a generic
+    geometric transform going wrong.
+
+    Args:
+        edits (list): Each entry is a string
+            "old_x1|old_y1|old_x2|old_y2|new_x1|new_y1|new_x2|new_y2"
+            (all in mm). A selected track is only modified if its current
+            (X1,Y1,X2,Y2) matches an entry's old_* values within 0.01mm.
+
+    Returns:
+        str: JSON object with applied_count and unmatched_count
+    """
+    logger.info(f"Applying {len(edits)} track edits")
+
+    response = await altium_bridge.execute_command(
+        "apply_track_edits",
+        {"edits": edits}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error applying track edits: {error_msg}")
+        return json.dumps({"error": f"Failed to apply track edits: {error_msg}"})
+
+    result_data = response.get("result", {})
+    logger.info(f"Applied track edits")
+    return json.dumps(result_data, indent=2)
 
 @mcp.tool()
 async def get_output_job_containers(ctx: Context) -> str:

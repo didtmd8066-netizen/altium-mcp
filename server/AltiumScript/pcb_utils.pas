@@ -661,27 +661,35 @@ begin
             NetClass := ClassIterator.NextPCBObject;
         end;
         
-        // If class doesn't exist, create it
+        // If class doesn't exist, create it and add members before registering it on the board
+        // (matches Altium's documented CreateANewNetClass example exactly - AddMemberByName
+        // is called as a bare statement, not as a boolean-returning function call)
         if not ClassExists then
         begin
             PCBServer.PreProcess;
             NetClass := PCBServer.PCBClassFactoryByClassMember(eClassMemberKind_Net);
             NetClass.SuperClass := False;
             NetClass.Name := ClassName;
+            for i := 0 to NetNames.Count - 1 do
+            begin
+                NetClass.AddMemberByName(NetNames[i]);
+                AddedCount := AddedCount + 1;
+            end;
             Board.AddPCBObject(NetClass);
             PCBServer.PostProcess;
-        end;
-        
-        // Add nets to the class
-        PCBServer.PreProcess;
-        for i := 0 to NetNames.Count - 1 do
+        end
+        else
         begin
-            // Add each net to the class
-            if NetClass.AddMemberByName(NetNames[i]) then
+            // Class already exists on the board - add nets to it directly
+            PCBServer.PreProcess;
+            for i := 0 to NetNames.Count - 1 do
+            begin
+                NetClass.AddMemberByName(NetNames[i]);
                 AddedCount := AddedCount + 1;
+            end;
+            PCBServer.PostProcess;
         end;
-        PCBServer.PostProcess;
-        
+
         // Clean up iterator
         Board.BoardIterator_Destroy(ClassIterator);
         
@@ -1423,7 +1431,7 @@ end;
 // IPCB_ClearanceConstraint subtype. PCBRuleFactory's result must be assigned
 // directly to a variable typed as that subtype for DelphiScript to expose
 // .Gap; a generic IPCB_Rule variable will not see it.
-function CreatePCBClearanceRule(RuleName: String; Scope1: String; Scope2: String; GapMM: Double): String;
+function CreatePCBClearanceRule(RuleName: String; Scope1: String; Scope2: String; GapMM: Double; NetScopeStr: String): String;
 var
     Board       : IPCB_Board;
     Rule        : IPCB_Rule;
@@ -1444,7 +1452,18 @@ begin
         try
             RuleClear := PCBServer.PCBRuleFactory(eRule_Clearance);
             RuleClear.LayerKind := eRuleLayerKind_SameLayer;
-            RuleClear.NetScope := eNetScope_AnyNet;
+            // Default (including when the caller passes nothing, e.g. before the MCP
+            // tool schema is updated/reloaded) is DifferentNetsOnly: clearance rules
+            // are about preventing shorts between unrelated nets, so checking spacing
+            // on same-net copper (which is expected to touch/overlap) is not meaningful
+            // and can produce spurious/confusing behavior. Pass net_scope="AnyNet" or
+            // "SameNetOnly" explicitly to opt out.
+            if (NetScopeStr = 'AnyNet') then
+                RuleClear.NetScope := eNetScope_AnyNet
+            else if (NetScopeStr = 'SameNetOnly') then
+                RuleClear.NetScope := eNetScope_SameNetOnly
+            else
+                RuleClear.NetScope := eNetScope_DifferentNetsOnly;
             RuleClear.Gap := MMsToCoord(GapMM);
 
             if (RuleName <> '') then
@@ -2679,5 +2698,610 @@ begin
         ResultProps.Free;
         MissingArray.Free;
         PlacedArray.Free;
+    end;
+end;
+
+// Read-only diagnostic: reports the primitive composition and overall bounding
+// box (in mm) of whichever footprint is currently open/focused in the active
+// PCB library document. Used to plan a scale operation before touching geometry.
+function GetCurrentPCBLibFootprintInfo(ROOT_DIR): String;
+var
+    PcbLib      : IPCB_Library;
+    LibComp     : IPCB_LibComponent;
+    LibBoard    : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    Rect        : TCoordRect;
+    HasAny      : Boolean;
+    MinX, MinY, MaxX, MaxY : TCoord;
+    NTrack, NArc, NRegion, NFill, NText, NPad, NVia, NBody, NOther : Integer;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+begin
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    if PcbLib = nil then
+    begin
+        Result := '{"success": false, "error": "No PCB library document is currently active. Open a .PcbLib file first."}';
+        Exit;
+    end;
+
+    LibComp := PcbLib.GetState_CurrentComponent;
+    if LibComp = nil then
+    begin
+        Result := '{"success": false, "error": "No footprint is currently open/selected in the PCB library editor."}';
+        Exit;
+    end;
+
+    LibBoard := PcbLib.GetState_Board;
+    if LibBoard = nil then
+    begin
+        Result := '{"success": false, "error": "Could not get the PCB library editor board for the current footprint."}';
+        Exit;
+    end;
+
+    NTrack := 0; NArc := 0; NRegion := 0; NFill := 0; NText := 0; NPad := 0; NVia := 0; NBody := 0; NOther := 0;
+    HasAny := False;
+    MinX := 0; MinY := 0; MaxX := 0; MaxY := 0;
+
+    ResultProps := TStringList.Create;
+    try
+        Iterator := LibBoard.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eRegionObject, eFillObject, eTextObject, ePadObject, eViaObject, eComponentBodyObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Prim := Iterator.FirstPCBObject;
+        while (Prim <> nil) do
+        begin
+            case Prim.ObjectId of
+                eTrackObject:          NTrack  := NTrack  + 1;
+                eArcObject:            NArc    := NArc    + 1;
+                eRegionObject:         NRegion := NRegion + 1;
+                eFillObject:           NFill   := NFill   + 1;
+                eTextObject:           NText   := NText   + 1;
+                ePadObject:            NPad    := NPad    + 1;
+                eViaObject:            NVia    := NVia    + 1;
+                eComponentBodyObject:  NBody   := NBody   + 1;
+            else
+                NOther := NOther + 1;
+            end;
+
+            Rect := Prim.BoundingRectangle;
+            if not HasAny then
+            begin
+                MinX := Rect.Left;   MaxX := Rect.Right;
+                MinY := Rect.Bottom; MaxY := Rect.Top;
+                HasAny := True;
+            end
+            else
+            begin
+                if Rect.Left   < MinX then MinX := Rect.Left;
+                if Rect.Right  > MaxX then MaxX := Rect.Right;
+                if Rect.Bottom < MinY then MinY := Rect.Bottom;
+                if Rect.Top    > MaxY then MaxY := Rect.Top;
+            end;
+
+            Prim := Iterator.NextPCBObject;
+        end;
+        LibBoard.BoardIterator_Destroy(Iterator);
+
+        AddJSONBoolean(ResultProps, 'success', True);
+        AddJSONProperty(ResultProps, 'footprint_name', LibComp.Name);
+        AddJSONInteger(ResultProps, 'track_count', NTrack);
+        AddJSONInteger(ResultProps, 'arc_count', NArc);
+        AddJSONInteger(ResultProps, 'region_count', NRegion);
+        AddJSONInteger(ResultProps, 'fill_count', NFill);
+        AddJSONInteger(ResultProps, 'text_count', NText);
+        AddJSONInteger(ResultProps, 'pad_count', NPad);
+        AddJSONInteger(ResultProps, 'via_count', NVia);
+        AddJSONInteger(ResultProps, 'component_body_count', NBody);
+        AddJSONInteger(ResultProps, 'other_count', NOther);
+        if HasAny then
+        begin
+            AddJSONNumber(ResultProps, 'bbox_min_x_mm', CoordToMMs(MinX));
+            AddJSONNumber(ResultProps, 'bbox_min_y_mm', CoordToMMs(MinY));
+            AddJSONNumber(ResultProps, 'bbox_max_x_mm', CoordToMMs(MaxX));
+            AddJSONNumber(ResultProps, 'bbox_max_y_mm', CoordToMMs(MaxY));
+            AddJSONNumber(ResultProps, 'bbox_width_mm', CoordToMMs(MaxX - MinX));
+            AddJSONNumber(ResultProps, 'bbox_height_mm', CoordToMMs(MaxY - MinY));
+        end
+        else
+        begin
+            AddJSONBoolean(ResultProps, 'empty', True);
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+    end;
+end;
+
+// Uniformly scales every primitive of the currently open/focused PcbLib
+// footprint by ScaleFactor around the CENTER of its current bounding box (not
+// the origin) so the artwork shrinks/grows in place instead of also jumping
+// toward (0,0) - the footprint's reference point is not necessarily anywhere
+// near its geometry (e.g. duplicated/imported logos are often offset far from
+// origin). Handles Track, Arc, Region (silkscreen/logo artwork outlines), Pad,
+// Via and Text. Fill and ComponentBody primitives are left untouched and
+// counted separately (report them so the caller can decide whether to handle
+// them manually in the GUI).
+function ScaleCurrentPCBLibFootprint(ScaleFactor: Double): String;
+var
+    PcbLib      : IPCB_Library;
+    LibComp     : IPCB_LibComponent;
+    LibBoard    : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    Track       : IPCB_Track;
+    Arc         : IPCB_Arc;
+    Region      : IPCB_Region;
+    TextObj     : IPCB_Text;
+    Pad         : IPCB_Pad;
+    Via         : IPCB_Via;
+    Contour     : IPCB_Contour;
+    i           : Integer;
+    Rect        : TCoordRect;
+    HasAny      : Boolean;
+    MinX, MinY, MaxX, MaxY : TCoord;
+    CenterX, CenterY : TCoord;
+    NScaled, NSkipped : Integer;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+begin
+    if (ScaleFactor <= 0) then
+    begin
+        Result := '{"success": false, "error": "scale_factor must be greater than 0"}';
+        Exit;
+    end;
+
+    PcbLib := PCBServer.GetCurrentPCBLibrary;
+    if PcbLib = nil then
+    begin
+        Result := '{"success": false, "error": "No PCB library document is currently active. Open a .PcbLib file first."}';
+        Exit;
+    end;
+
+    LibComp := PcbLib.GetState_CurrentComponent;
+    if LibComp = nil then
+    begin
+        Result := '{"success": false, "error": "No footprint is currently open/selected in the PCB library editor."}';
+        Exit;
+    end;
+
+    LibBoard := PcbLib.GetState_Board;
+    if LibBoard = nil then
+    begin
+        Result := '{"success": false, "error": "Could not get the PCB library editor board for the current footprint."}';
+        Exit;
+    end;
+
+    NScaled := 0;
+    NSkipped := 0;
+
+    ResultProps := TStringList.Create;
+    try
+        // First pass: measure the current bounding box so we can scale around
+        // its center rather than the origin.
+        HasAny := False;
+        MinX := 0; MinY := 0; MaxX := 0; MaxY := 0;
+
+        Iterator := LibBoard.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eRegionObject, eFillObject, eTextObject, ePadObject, eViaObject, eComponentBodyObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Prim := Iterator.FirstPCBObject;
+        while (Prim <> nil) do
+        begin
+            Rect := Prim.BoundingRectangle;
+            if not HasAny then
+            begin
+                MinX := Rect.Left;   MaxX := Rect.Right;
+                MinY := Rect.Bottom; MaxY := Rect.Top;
+                HasAny := True;
+            end
+            else
+            begin
+                if Rect.Left   < MinX then MinX := Rect.Left;
+                if Rect.Right  > MaxX then MaxX := Rect.Right;
+                if Rect.Bottom < MinY then MinY := Rect.Bottom;
+                if Rect.Top    > MaxY then MaxY := Rect.Top;
+            end;
+            Prim := Iterator.NextPCBObject;
+        end;
+        LibBoard.BoardIterator_Destroy(Iterator);
+
+        CenterX := Round((MinX + MaxX) / 2);
+        CenterY := Round((MinY + MaxY) / 2);
+
+        PCBServer.PreProcess;
+        try
+            Iterator := LibBoard.BoardIterator_Create;
+            Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eRegionObject, eFillObject, eTextObject, ePadObject, eViaObject, eComponentBodyObject));
+            Iterator.AddFilter_LayerSet(AllLayers);
+            Iterator.AddFilter_Method(eProcessAll);
+
+            Prim := Iterator.FirstPCBObject;
+            while (Prim <> nil) do
+            begin
+                case Prim.ObjectId of
+                    eTrackObject:
+                    begin
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                        Track := Prim;
+                        Track.X1 := CenterX + Round((Track.X1 - CenterX) * ScaleFactor);
+                        Track.Y1 := CenterY + Round((Track.Y1 - CenterY) * ScaleFactor);
+                        Track.X2 := CenterX + Round((Track.X2 - CenterX) * ScaleFactor);
+                        Track.Y2 := CenterY + Round((Track.Y2 - CenterY) * ScaleFactor);
+                        Track.Width := Round(Track.Width * ScaleFactor);
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                        NScaled := NScaled + 1;
+                    end;
+
+                    eArcObject:
+                    begin
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                        Arc := Prim;
+                        Arc.XCenter := CenterX + Round((Arc.XCenter - CenterX) * ScaleFactor);
+                        Arc.YCenter := CenterY + Round((Arc.YCenter - CenterY) * ScaleFactor);
+                        Arc.Radius := Round(Arc.Radius * ScaleFactor);
+                        Arc.LineWidth := Round(Arc.LineWidth * ScaleFactor);
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                        NScaled := NScaled + 1;
+                    end;
+
+                    eRegionObject:
+                    begin
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                        Region := Prim;
+                        Contour := Region.MainContour.Replicate;
+                        for i := 1 to Contour.Count do
+                        begin
+                            Contour.X[i] := CenterX + Round((Contour.X[i] - CenterX) * ScaleFactor);
+                            Contour.Y[i] := CenterY + Round((Contour.Y[i] - CenterY) * ScaleFactor);
+                        end;
+                        Region.SetOutlineContour(Contour);
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                        NScaled := NScaled + 1;
+                    end;
+
+                    ePadObject:
+                    begin
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                        Pad := Prim;
+                        Pad.X := CenterX + Round((Pad.X - CenterX) * ScaleFactor);
+                        Pad.Y := CenterY + Round((Pad.Y - CenterY) * ScaleFactor);
+                        Pad.TopXSize := Round(Pad.TopXSize * ScaleFactor);
+                        Pad.TopYSize := Round(Pad.TopYSize * ScaleFactor);
+                        Pad.HoleSize := Round(Pad.HoleSize * ScaleFactor);
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                        NScaled := NScaled + 1;
+                    end;
+
+                    eViaObject:
+                    begin
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                        Via := Prim;
+                        Via.X := CenterX + Round((Via.X - CenterX) * ScaleFactor);
+                        Via.Y := CenterY + Round((Via.Y - CenterY) * ScaleFactor);
+                        Via.Size := Round(Via.Size * ScaleFactor);
+                        Via.HoleSize := Round(Via.HoleSize * ScaleFactor);
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                        NScaled := NScaled + 1;
+                    end;
+
+                    eTextObject:
+                    begin
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                        TextObj := Prim;
+                        TextObj.XLocation := CenterX + Round((TextObj.XLocation - CenterX) * ScaleFactor);
+                        TextObj.YLocation := CenterY + Round((TextObj.YLocation - CenterY) * ScaleFactor);
+                        TextObj.Height := Round(TextObj.Height * ScaleFactor);
+                        TextObj.Width := Round(TextObj.Width * ScaleFactor);
+                        PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                        NScaled := NScaled + 1;
+                    end;
+                else
+                    NSkipped := NSkipped + 1;
+                end;
+
+                Prim := Iterator.NextPCBObject;
+            end;
+            LibBoard.BoardIterator_Destroy(Iterator);
+        finally
+            PCBServer.PostProcess;
+        end;
+
+        LibBoard.ViewManager_FullUpdate;
+
+        // Measure the resulting bounding box for confirmation
+        HasAny := False;
+        MinX := 0; MinY := 0; MaxX := 0; MaxY := 0;
+
+        Iterator := LibBoard.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eRegionObject, eFillObject, eTextObject, ePadObject, eViaObject, eComponentBodyObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Prim := Iterator.FirstPCBObject;
+        while (Prim <> nil) do
+        begin
+            Rect := Prim.BoundingRectangle;
+            if not HasAny then
+            begin
+                MinX := Rect.Left;   MaxX := Rect.Right;
+                MinY := Rect.Bottom; MaxY := Rect.Top;
+                HasAny := True;
+            end
+            else
+            begin
+                if Rect.Left   < MinX then MinX := Rect.Left;
+                if Rect.Right  > MaxX then MaxX := Rect.Right;
+                if Rect.Bottom < MinY then MinY := Rect.Bottom;
+                if Rect.Top    > MaxY then MaxY := Rect.Top;
+            end;
+            Prim := Iterator.NextPCBObject;
+        end;
+        LibBoard.BoardIterator_Destroy(Iterator);
+
+        AddJSONBoolean(ResultProps, 'success', True);
+        AddJSONProperty(ResultProps, 'footprint_name', LibComp.Name);
+        AddJSONNumber(ResultProps, 'scale_factor', ScaleFactor);
+        AddJSONInteger(ResultProps, 'scaled_count', NScaled);
+        AddJSONInteger(ResultProps, 'skipped_count', NSkipped);
+        if HasAny then
+        begin
+            AddJSONNumber(ResultProps, 'bbox_width_mm', CoordToMMs(MaxX - MinX));
+            AddJSONNumber(ResultProps, 'bbox_height_mm', CoordToMMs(MaxY - MinY));
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+    end;
+end;
+
+// Read-only: reports the currently-selected Track and Arc primitives on the
+// active PCB document, with full geometry in mm, so their exact shape can be
+// computed/edited precisely (e.g. offsetting part of a board outline).
+function GetSelectedTracksAndArcs(ROOT_DIR): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    Track       : IPCB_Track;
+    Arc         : IPCB_Arc;
+    TracksArray : TStringList;
+    ArcsArray   : TStringList;
+    ItemProps   : TStringList;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    if Board = nil then
+    begin
+        Result := '{"success": false, "error": "No PCB document is currently active"}';
+        Exit;
+    end;
+
+    TracksArray := TStringList.Create;
+    ArcsArray := TStringList.Create;
+    ResultProps := TStringList.Create;
+    try
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Prim := Iterator.FirstPCBObject;
+        while (Prim <> nil) do
+        begin
+            if Prim.Selected then
+            begin
+                if (Prim.ObjectId = eTrackObject) then
+                begin
+                    Track := Prim;
+                    ItemProps := TStringList.Create;
+                    try
+                        AddJSONProperty(ItemProps, 'layer', Layer2String(Track.Layer));
+                        AddJSONNumber(ItemProps, 'x1_mm', CoordToMMs(Track.X1));
+                        AddJSONNumber(ItemProps, 'y1_mm', CoordToMMs(Track.Y1));
+                        AddJSONNumber(ItemProps, 'x2_mm', CoordToMMs(Track.X2));
+                        AddJSONNumber(ItemProps, 'y2_mm', CoordToMMs(Track.Y2));
+                        AddJSONNumber(ItemProps, 'width_mm', CoordToMMs(Track.Width));
+                        TracksArray.Add(BuildJSONObject(ItemProps, 2));
+                    finally
+                        ItemProps.Free;
+                    end;
+                end
+                else if (Prim.ObjectId = eArcObject) then
+                begin
+                    Arc := Prim;
+                    ItemProps := TStringList.Create;
+                    try
+                        AddJSONProperty(ItemProps, 'layer', Layer2String(Arc.Layer));
+                        AddJSONNumber(ItemProps, 'x_center_mm', CoordToMMs(Arc.XCenter));
+                        AddJSONNumber(ItemProps, 'y_center_mm', CoordToMMs(Arc.YCenter));
+                        AddJSONNumber(ItemProps, 'radius_mm', CoordToMMs(Arc.Radius));
+                        AddJSONNumber(ItemProps, 'start_angle_deg', Arc.StartAngle);
+                        AddJSONNumber(ItemProps, 'end_angle_deg', Arc.EndAngle);
+                        AddJSONNumber(ItemProps, 'line_width_mm', CoordToMMs(Arc.LineWidth));
+                        ArcsArray.Add(BuildJSONObject(ItemProps, 2));
+                    finally
+                        ItemProps.Free;
+                    end;
+                end;
+            end;
+
+            Prim := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        AddJSONBoolean(ResultProps, 'success', True);
+        AddJSONInteger(ResultProps, 'track_count', TracksArray.Count);
+        AddJSONInteger(ResultProps, 'arc_count', ArcsArray.Count);
+        if (TracksArray.Count > 0) then
+            ResultProps.Add(BuildJSONArray(TracksArray, 'tracks', 1))
+        else
+            ResultProps.Add('"tracks": []');
+        if (ArcsArray.Count > 0) then
+            ResultProps.Add(BuildJSONArray(ArcsArray, 'arcs', 1))
+        else
+            ResultProps.Add('"arcs": []');
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+        TracksArray.Free;
+        ArcsArray.Free;
+    end;
+end;
+
+// Precisely edits specific currently-SELECTED Track primitives by exact
+// coordinate match. Each entry in EditsList is a pipe-delimited line:
+// "old_x1|old_y1|old_x2|old_y2|new_x1|new_y1|new_x2|new_y2" (all in mm).
+// Pipe (not comma) is used because the command dispatcher strips commas
+// when parsing each JSON array element into this list.
+// A selected track is only modified if its current (X1,Y1,X2,Y2) matches an
+// entry's old_* values within a small tolerance - this makes the operation
+// safe and deterministic instead of relying on a generic geometric transform
+// that could go wrong on complex/irregular outlines.
+function ApplyTrackEdits(EditsList: TStringList): String;
+const
+    TolMM = 0.01;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    Track       : IPCB_Track;
+    i, j        : Integer;
+    Fields      : TStringList;
+    Line        : String;
+    FieldStart  : Integer;
+    OldX1, OldY1, OldX2, OldY2 : Double;
+    NewX1, NewY1, NewX2, NewY2 : Double;
+    CurX1, CurY1, CurX2, CurY2 : Double;
+    Matched     : Boolean;
+    NApplied, NUnmatched : Integer;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    if Board = nil then
+    begin
+        Result := '{"success": false, "error": "No PCB document is currently active"}';
+        Exit;
+    end;
+
+    NApplied := 0;
+    NUnmatched := 0;
+    ResultProps := TStringList.Create;
+    Fields := TStringList.Create;
+    try
+        PCBServer.PreProcess;
+        try
+            for i := 0 to EditsList.Count - 1 do
+            begin
+                Line := Trim(EditsList[i]);
+                if (Line = '') then continue;
+
+                Fields.Clear;
+                FieldStart := 1;
+                for j := 1 to Length(Line) + 1 do
+                begin
+                    if (j > Length(Line)) or (Line[j] = '|') then
+                    begin
+                        Fields.Add(Trim(Copy(Line, FieldStart, j - FieldStart)));
+                        FieldStart := j + 1;
+                    end;
+                end;
+                if Fields.Count < 8 then continue;
+
+                OldX1 := SafeStrToFloat(Fields[0]);
+                OldY1 := SafeStrToFloat(Fields[1]);
+                OldX2 := SafeStrToFloat(Fields[2]);
+                OldY2 := SafeStrToFloat(Fields[3]);
+                NewX1 := SafeStrToFloat(Fields[4]);
+                NewY1 := SafeStrToFloat(Fields[5]);
+                NewX2 := SafeStrToFloat(Fields[6]);
+                NewY2 := SafeStrToFloat(Fields[7]);
+
+                Matched := False;
+
+                Iterator := Board.BoardIterator_Create;
+                Iterator.AddFilter_ObjectSet(MkSet(eTrackObject));
+                Iterator.AddFilter_LayerSet(AllLayers);
+                Iterator.AddFilter_Method(eProcessAll);
+
+                Prim := Iterator.FirstPCBObject;
+                while (Prim <> nil) do
+                begin
+                    if Prim.Selected then
+                    begin
+                        Track := Prim;
+                        CurX1 := CoordToMMs(Track.X1);
+                        CurY1 := CoordToMMs(Track.Y1);
+                        CurX2 := CoordToMMs(Track.X2);
+                        CurY2 := CoordToMMs(Track.Y2);
+
+                        if (Abs(CurX1 - OldX1) < TolMM) and (Abs(CurY1 - OldY1) < TolMM) and
+                           (Abs(CurX2 - OldX2) < TolMM) and (Abs(CurY2 - OldY2) < TolMM) then
+                        begin
+                            PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_BeginModify, c_NoEventData);
+                            Track.X1 := MMsToCoord(NewX1);
+                            Track.Y1 := MMsToCoord(NewY1);
+                            Track.X2 := MMsToCoord(NewX2);
+                            Track.Y2 := MMsToCoord(NewY2);
+                            PCBServer.SendMessageToRobots(Prim.I_ObjectAddress, c_Broadcast, PCBM_EndModify, c_NoEventData);
+                            Matched := True;
+                        end;
+                    end;
+                    Prim := Iterator.NextPCBObject;
+                end;
+                Board.BoardIterator_Destroy(Iterator);
+
+                if Matched then
+                    NApplied := NApplied + 1
+                else
+                    NUnmatched := NUnmatched + 1;
+            end;
+        finally
+            PCBServer.PostProcess;
+        end;
+
+        Board.ViewManager_FullUpdate;
+
+        AddJSONBoolean(ResultProps, 'success', True);
+        AddJSONInteger(ResultProps, 'applied_count', NApplied);
+        AddJSONInteger(ResultProps, 'unmatched_count', NUnmatched);
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+        Fields.Free;
     end;
 end;

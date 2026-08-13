@@ -155,7 +155,9 @@ begin
        (CommandName = 'get_net_connections')                 or
        (CommandName = 'set_component_position')              or
        (CommandName = 'set_pcb_layer_visibility')            or
-       (CommandName = 'get_pcb_layer_stackup')                then
+       (CommandName = 'get_pcb_layer_stackup')                or
+       (CommandName = 'get_selected_tracks_and_arcs')         or
+       (CommandName = 'apply_track_edits')                    then
     begin
         DocumentKind := 'PCB';
     end
@@ -173,7 +175,9 @@ begin
     begin
         DocumentKind := 'SCHLIB';
     end
-    else if (CommandName = 'create_pcb_footprint') then
+    else if (CommandName = 'create_pcb_footprint')            or
+            (CommandName = 'get_current_pcblib_footprint_info') or
+            (CommandName = 'scale_current_pcblib_footprint')   then
     begin
         DocumentKind := 'PCBLIB';
     end

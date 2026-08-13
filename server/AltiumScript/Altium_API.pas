@@ -1022,6 +1022,73 @@ begin
     end;
 end;
 
+// Extract the apply track edits logic
+function ExecuteApplyTrackEdits(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i: Integer;
+    EditsList: TStringList;
+begin
+    EditsList := TStringList.Create;
+    try
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"edits"', RequestData[i]) > 0) then
+            begin
+                i := i + 1; // Move to the next line (should be '[')
+
+                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+                begin
+                    ParamValue := RequestData[i];
+                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                    // Trailing comma between array elements only - strip a
+                    // trailing comma, but keep internal pipe-delimited fields intact
+                    ParamValue := Trim(ParamValue);
+                    if (Length(ParamValue) > 0) and (ParamValue[Length(ParamValue)] = ',') then
+                        ParamValue := Copy(ParamValue, 1, Length(ParamValue) - 1);
+                    ParamValue := Trim(ParamValue);
+
+                    if (ParamValue <> '') and (ParamValue <> '[') then
+                        EditsList.Add(ParamValue);
+
+                    i := i + 1;
+                end;
+
+                break;
+            end;
+        end;
+
+        Result := ApplyTrackEdits(EditsList);
+    finally
+        EditsList.Free;
+    end;
+end;
+
+// Extract the scale current PcbLib footprint logic
+function ExecuteScaleCurrentPCBLibFootprint(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i, ValueStart: Integer;
+    ScaleFactor: Double;
+begin
+    ScaleFactor := 0;
+
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"scale_factor"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            ParamValue := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
+            ScaleFactor := SafeStrToFloat(ParamValue);
+        end;
+    end;
+
+    if (ScaleFactor > 0) then
+        Result := ScaleCurrentPCBLibFootprint(ScaleFactor)
+    else
+        Result := '{"success": false, "error": "scale_factor is required and must be greater than 0"}';
+end;
+
 // Extract the create PCB clearance rule logic
 function ExecuteCreatePCBClearanceRule(RequestData: TStringList): String;
 var
@@ -1031,11 +1098,13 @@ var
     Scope1: String;
     Scope2: String;
     GapMM: Double;
+    NetScopeStr: String;
 begin
     RuleName := '';
     Scope1 := '';
     Scope2 := '';
     GapMM := 0;
+    NetScopeStr := '';
 
     for i := 0 to RequestData.Count - 1 do
     begin
@@ -1059,11 +1128,16 @@ begin
             ValueStart := Pos(':', RequestData[i]) + 1;
             ParamValue := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
             GapMM := SafeStrToFloat(ParamValue);
+        end
+        else if (Pos('"net_scope"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            NetScopeStr := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
         end;
     end;
 
     if (Scope1 <> '') and (Scope2 <> '') then
-        Result := CreatePCBClearanceRule(RuleName, Scope1, Scope2, GapMM)
+        Result := CreatePCBClearanceRule(RuleName, Scope1, Scope2, GapMM, NetScopeStr)
     else
         Result := '{"success": false, "error": "scope1 and scope2 are required"}';
 end;
@@ -1230,7 +1304,15 @@ begin
         'set_pcb_layer_visibility':
             Result := ExecuteSetPCBLayerVisibility(RequestData);   
         'get_pcb_layer_stackup':
-            Result := GetPCBLayerStackup(ROOT_DIR);         
+            Result := GetPCBLayerStackup(ROOT_DIR);
+        'get_current_pcblib_footprint_info':
+            Result := GetCurrentPCBLibFootprintInfo(ROOT_DIR);
+        'scale_current_pcblib_footprint':
+            Result := ExecuteScaleCurrentPCBLibFootprint(RequestData);
+        'get_selected_tracks_and_arcs':
+            Result := GetSelectedTracksAndArcs(ROOT_DIR);
+        'apply_track_edits':
+            Result := ExecuteApplyTrackEdits(RequestData);
         'get_selected_components_coordinates':
             Result := GetSelectedComponentsCoordinates(ROOT_DIR); 
 		'set_component_position':
