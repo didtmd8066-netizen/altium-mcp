@@ -1022,6 +1022,67 @@ begin
     end;
 end;
 
+// Extract the get plane layers for net logic
+function ExecuteGetPlaneLayersForNet(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i, ValueStart: Integer;
+    NetName: String;
+begin
+    NetName := '';
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"net_name"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            NetName := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
+        end;
+    end;
+
+    if (NetName <> '') then
+        Result := GetPlaneLayersForNet(ROOT_DIR, NetName)
+    else
+        Result := '{"success": false, "error": "net_name is required"}';
+end;
+
+// Extract the get track widths by net logic
+function ExecuteGetTrackWidthsByNet(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i: Integer;
+    NetNamesList: TStringList;
+begin
+    NetNamesList := TStringList.Create;
+    try
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"net_names"', RequestData[i]) > 0) then
+            begin
+                i := i + 1; // Move to the next line (should be '[')
+
+                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+                begin
+                    ParamValue := RequestData[i];
+                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                    ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
+                    ParamValue := Trim(ParamValue);
+
+                    if (ParamValue <> '') and (ParamValue <> '[') then
+                        NetNamesList.Add(ParamValue);
+
+                    i := i + 1;
+                end;
+
+                break;
+            end;
+        end;
+
+        Result := GetTrackWidthsByNet(ROOT_DIR, NetNamesList);
+    finally
+        NetNamesList.Free;
+    end;
+end;
+
 // Extract the apply track edits logic
 function ExecuteApplyTrackEdits(RequestData: TStringList): String;
 var
@@ -1313,6 +1374,12 @@ begin
             Result := GetSelectedTracksAndArcs(ROOT_DIR);
         'apply_track_edits':
             Result := ExecuteApplyTrackEdits(RequestData);
+        'get_track_widths_by_net':
+            Result := ExecuteGetTrackWidthsByNet(RequestData);
+        'get_net_routing_status':
+            Result := GetNetRoutingStatus(ROOT_DIR);
+        'get_plane_layers_for_net':
+            Result := ExecuteGetPlaneLayersForNet(RequestData);
         'get_selected_components_coordinates':
             Result := GetSelectedComponentsCoordinates(ROOT_DIR); 
 		'set_component_position':

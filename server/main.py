@@ -2578,6 +2578,94 @@ async def apply_track_edits(ctx: Context, edits: list) -> str:
     return json.dumps(result_data, indent=2)
 
 @mcp.tool()
+async def get_track_widths_by_net(ctx: Context, net_names: list) -> str:
+    """
+    Get the actual routed width (mm) of every Track on the active PCB
+    document for each requested net name. Use this to check whether a
+    hand-routed high-current net is actually wide enough, since design rules
+    only enforce a minimum and don't reflect what was really drawn.
+
+    Args:
+        net_names (list): Net names to check, e.g. ["+100V", "-100V"]
+
+    Returns:
+        str: JSON object with nets: [{net, track_count,
+             tracks: [{layer, width_mm, length_mm}, ...]}, ...]
+    """
+    logger.info(f"Getting track widths for nets: {net_names}")
+
+    response = await altium_bridge.execute_command(
+        "get_track_widths_by_net",
+        {"net_names": net_names}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting track widths by net: {error_msg}")
+        return json.dumps({"error": f"Failed to get track widths by net: {error_msg}"})
+
+    result_data = response.get("result", {})
+    logger.info(f"Retrieved track widths by net")
+    return json.dumps(result_data, indent=2)
+
+@mcp.tool()
+async def get_net_routing_status(ctx: Context) -> str:
+    """
+    Find nets on the active PCB document that have more than one pad but no
+    copper (Track/Arc/Region/Fill) anywhere - i.e. still pure ratsnest/unrouted.
+
+    Returns:
+        str: JSON object with total_nets_checked and
+             unrouted_nets: [{net, pad_count}, ...]
+    """
+    logger.info("Getting net routing status (unrouted nets)")
+
+    response = await altium_bridge.execute_command(
+        "get_net_routing_status",
+        {}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting net routing status: {error_msg}")
+        return json.dumps({"error": f"Failed to get net routing status: {error_msg}"})
+
+    result_data = response.get("result", {})
+    logger.info(f"Retrieved net routing status")
+    return json.dumps(result_data, indent=2)
+
+@mcp.tool()
+async def get_plane_layers_for_net(ctx: Context, net_name: str) -> str:
+    """
+    Find which layer(s) have a Region or Polygon (plane/pour) primitive for a
+    given net, with each shape's bounding box in mm - use this to tell a
+    full-board ground plane apart from a small localized power pour, and to
+    confirm exactly which layer a reference plane net actually lives on.
+
+    Args:
+        net_name (str): Net to look up, e.g. "DGND"
+
+    Returns:
+        str: JSON object with net, shape_count, and
+             shapes: [{kind, layer, bbox_width_mm, bbox_height_mm}, ...]
+    """
+    logger.info(f"Getting plane layers for net: {net_name}")
+
+    response = await altium_bridge.execute_command(
+        "get_plane_layers_for_net",
+        {"net_name": net_name}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting plane layers for net: {error_msg}")
+        return json.dumps({"error": f"Failed to get plane layers for net: {error_msg}"})
+
+    result_data = response.get("result", {})
+    logger.info(f"Retrieved plane layers for net")
+    return json.dumps(result_data, indent=2)
+
+@mcp.tool()
 async def get_output_job_containers(ctx: Context) -> str:
     """
     Get all available output job containers from a specified OutJob file

@@ -157,7 +157,10 @@ begin
        (CommandName = 'set_pcb_layer_visibility')            or
        (CommandName = 'get_pcb_layer_stackup')                or
        (CommandName = 'get_selected_tracks_and_arcs')         or
-       (CommandName = 'apply_track_edits')                    then
+       (CommandName = 'apply_track_edits')                    or
+       (CommandName = 'get_track_widths_by_net')              or
+       (CommandName = 'get_net_routing_status')               or
+       (CommandName = 'get_plane_layers_for_net')             then
     begin
         DocumentKind := 'PCB';
     end

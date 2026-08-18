@@ -3305,3 +3305,345 @@ begin
         Fields.Free;
     end;
 end;
+
+// Read-only: for each requested net name, reports every routed Track's
+// width/layer (in mm) on the active PCB document. Used to check whether an
+// actual routed trace is wide enough for its expected current, since design
+// rules only set a minimum and don't reflect what was actually hand-routed.
+function GetTrackWidthsByNet(ROOT_DIR, NetNamesList: TStringList): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    Track       : IPCB_Track;
+    i           : Integer;
+    NetName     : String;
+    NetsArray   : TStringList;
+    TracksArray : TStringList;
+    ItemProps   : TStringList;
+    NetProps    : TStringList;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+    TCount      : Integer;
+begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    if Board = nil then
+    begin
+        Result := '{"success": false, "error": "No PCB document is currently active"}';
+        Exit;
+    end;
+
+    ResultProps := TStringList.Create;
+    NetsArray := TStringList.Create;
+    try
+        for i := 0 to NetNamesList.Count - 1 do
+        begin
+            NetName := Trim(NetNamesList[i]);
+            if (NetName = '') then continue;
+
+            TracksArray := TStringList.Create;
+            TCount := 0;
+            try
+                Iterator := Board.BoardIterator_Create;
+                Iterator.AddFilter_ObjectSet(MkSet(eTrackObject));
+                Iterator.AddFilter_LayerSet(AllLayers);
+                Iterator.AddFilter_Method(eProcessAll);
+
+                Prim := Iterator.FirstPCBObject;
+                while (Prim <> nil) do
+                begin
+                    Track := Prim;
+                    if (Track.Net <> nil) and (Track.Net.Name = NetName) then
+                    begin
+                        TCount := TCount + 1;
+                        ItemProps := TStringList.Create;
+                        try
+                            AddJSONProperty(ItemProps, 'layer', Layer2String(Track.Layer));
+                            AddJSONNumber(ItemProps, 'width_mm', CoordToMMs(Track.Width));
+                            AddJSONNumber(ItemProps, 'length_mm', CoordToMMs(Sqrt(Sqr(Track.X2-Track.X1) + Sqr(Track.Y2-Track.Y1))));
+                            TracksArray.Add(BuildJSONObject(ItemProps, 3));
+                        finally
+                            ItemProps.Free;
+                        end;
+                    end;
+                    Prim := Iterator.NextPCBObject;
+                end;
+                Board.BoardIterator_Destroy(Iterator);
+
+                NetProps := TStringList.Create;
+                try
+                    AddJSONProperty(NetProps, 'net', NetName);
+                    AddJSONInteger(NetProps, 'track_count', TCount);
+                    if (TracksArray.Count > 0) then
+                        NetProps.Add(BuildJSONArray(TracksArray, 'tracks', 2))
+                    else
+                        NetProps.Add('"tracks": []');
+                    NetsArray.Add(BuildJSONObject(NetProps, 1));
+                finally
+                    NetProps.Free;
+                end;
+            finally
+                TracksArray.Free;
+            end;
+        end;
+
+        AddJSONBoolean(ResultProps, 'success', True);
+        if (NetsArray.Count > 0) then
+            ResultProps.Add(BuildJSONArray(NetsArray, 'nets', 0))
+        else
+            ResultProps.Add('"nets": []');
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+        NetsArray.Free;
+    end;
+end;
+
+// Read-only: for every net on the board, reports pad_count and whether any
+// copper (Track/Arc/Region/Fill) exists for it anywhere. A net with
+// has_copper=false and pad_count>1 is effectively still pure ratsnest
+// (unrouted) - used to find what still needs routing across the whole board.
+function GetNetRoutingStatus(ROOT_DIR): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    Pad         : IPCB_Pad;
+    RegionVar   : IPCB_Region;
+    PolyVar     : IPCB_Polygon;
+    PrimNet     : IPCB_Net;
+    NetName     : String;
+    NetKeys     : TStringList;   // unique net names, in first-seen order
+    NetCounts   : TStringList;   // parallel to NetKeys: pad count as string
+    NetHasCopper : TStringList;  // net names that have any copper found
+    idx         : Integer;
+    i           : Integer;
+    NetsArray   : TStringList;
+    ItemProps   : TStringList;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+    PadCount    : Integer;
+begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    if Board = nil then
+    begin
+        Result := '{"success": false, "error": "No PCB document is currently active"}';
+        Exit;
+    end;
+
+    NetKeys := TStringList.Create;
+    NetCounts := TStringList.Create;
+    NetHasCopper := TStringList.Create;
+    NetHasCopper.Sorted := True;
+    NetHasCopper.Duplicates := dupIgnore;
+    ResultProps := TStringList.Create;
+    NetsArray := TStringList.Create;
+    try
+        // Pass 1: count pads per net (NetKeys/NetCounts kept in lockstep)
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(ePadObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Pad := Iterator.FirstPCBObject;
+        while (Pad <> nil) do
+        begin
+            if (Pad.Net <> nil) then
+            begin
+                NetName := Pad.Net.Name;
+                idx := NetKeys.IndexOf(NetName);
+                if (idx < 0) then
+                begin
+                    NetKeys.Add(NetName);
+                    NetCounts.Add('1');
+                end
+                else
+                begin
+                    PadCount := StrToInt(NetCounts[idx]);
+                    NetCounts[idx] := IntToStr(PadCount + 1);
+                end;
+            end;
+            Pad := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        // Pass 2: mark nets that have any copper (Track/Arc/Region/Fill/Polygon pour)
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eTrackObject, eArcObject, eRegionObject, eFillObject, ePolyObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Prim := Iterator.FirstPCBObject;
+        while (Prim <> nil) do
+        begin
+            PrimNet := nil;
+            case Prim.ObjectId of
+                eRegionObject:
+                begin
+                    RegionVar := Prim;
+                    PrimNet := RegionVar.Net;
+                end;
+                ePolyObject:
+                begin
+                    PolyVar := Prim;
+                    PrimNet := PolyVar.Net;
+                end;
+            else
+                PrimNet := Prim.Net;
+            end;
+
+            if (PrimNet <> nil) then
+            begin
+                NetName := PrimNet.Name;
+                if (NetHasCopper.IndexOf(NetName) < 0) then
+                    NetHasCopper.Add(NetName);
+            end;
+            Prim := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        // Build result: only nets with pad_count > 1 and no copper found
+        AddJSONBoolean(ResultProps, 'success', True);
+        for i := 0 to NetKeys.Count - 1 do
+        begin
+            NetName := NetKeys[i];
+            PadCount := StrToInt(NetCounts[i]);
+            if (PadCount > 1) and (NetHasCopper.IndexOf(NetName) < 0) then
+            begin
+                ItemProps := TStringList.Create;
+                try
+                    AddJSONProperty(ItemProps, 'net', NetName);
+                    AddJSONInteger(ItemProps, 'pad_count', PadCount);
+                    NetsArray.Add(BuildJSONObject(ItemProps, 1));
+                finally
+                    ItemProps.Free;
+                end;
+            end;
+        end;
+
+        AddJSONInteger(ResultProps, 'total_nets_checked', NetKeys.Count);
+        if (NetsArray.Count > 0) then
+            ResultProps.Add(BuildJSONArray(NetsArray, 'unrouted_nets', 0))
+        else
+            ResultProps.Add('"unrouted_nets": []');
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+        NetsArray.Free;
+        NetKeys.Free;
+        NetCounts.Free;
+        NetHasCopper.Free;
+    end;
+end;
+
+// Read-only: for a given net name, reports which layer(s) have a Region or
+// Polygon (plane/pour) primitive for that net, plus each shape's bounding
+// box (mm) so the caller can tell a full-board plane from a small local pour.
+function GetPlaneLayersForNet(ROOT_DIR, NetName: String): String;
+var
+    Board       : IPCB_Board;
+    Iterator    : IPCB_BoardIterator;
+    Prim        : IPCB_Primitive;
+    RegionVar   : IPCB_Region;
+    PolyVar     : IPCB_Polygon;
+    PrimNet     : IPCB_Net;
+    Rect        : TCoordRect;
+    ShapesArray : TStringList;
+    ItemProps   : TStringList;
+    ResultProps : TStringList;
+    OutputLines : TStringList;
+    Kind        : String;
+    xorigin, yorigin : Integer;
+begin
+    Board := PCBServer.GetCurrentPCBBoard;
+    if Board = nil then
+    begin
+        Result := '{"success": false, "error": "No PCB document is currently active"}';
+        Exit;
+    end;
+
+    xorigin := Board.XOrigin;
+    yorigin := Board.YOrigin;
+
+    ResultProps := TStringList.Create;
+    ShapesArray := TStringList.Create;
+    try
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eRegionObject, ePolyObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Prim := Iterator.FirstPCBObject;
+        while (Prim <> nil) do
+        begin
+            PrimNet := nil;
+            Kind := '';
+            if (Prim.ObjectId = eRegionObject) then
+            begin
+                RegionVar := Prim;
+                PrimNet := RegionVar.Net;
+                Kind := 'Region';
+            end
+            else if (Prim.ObjectId = ePolyObject) then
+            begin
+                PolyVar := Prim;
+                PrimNet := PolyVar.Net;
+                Kind := 'Polygon';
+            end;
+
+            if (PrimNet <> nil) and (PrimNet.Name = NetName) then
+            begin
+                Rect := Prim.BoundingRectangle;
+                ItemProps := TStringList.Create;
+                try
+                    AddJSONProperty(ItemProps, 'kind', Kind);
+                    AddJSONProperty(ItemProps, 'layer', Layer2String(Prim.Layer));
+                    AddJSONNumber(ItemProps, 'bbox_min_x_mm', CoordToMMs(Rect.Left - xorigin));
+                    AddJSONNumber(ItemProps, 'bbox_min_y_mm', CoordToMMs(Rect.Bottom - yorigin));
+                    AddJSONNumber(ItemProps, 'bbox_max_x_mm', CoordToMMs(Rect.Right - xorigin));
+                    AddJSONNumber(ItemProps, 'bbox_max_y_mm', CoordToMMs(Rect.Top - yorigin));
+                    AddJSONNumber(ItemProps, 'bbox_width_mm', CoordToMMs(Rect.Right - Rect.Left));
+                    AddJSONNumber(ItemProps, 'bbox_height_mm', CoordToMMs(Rect.Top - Rect.Bottom));
+                    ShapesArray.Add(BuildJSONObject(ItemProps, 1));
+                finally
+                    ItemProps.Free;
+                end;
+            end;
+            Prim := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        AddJSONBoolean(ResultProps, 'success', True);
+        AddJSONProperty(ResultProps, 'net', NetName);
+        AddJSONInteger(ResultProps, 'shape_count', ShapesArray.Count);
+        if (ShapesArray.Count > 0) then
+            ResultProps.Add(BuildJSONArray(ShapesArray, 'shapes', 0))
+        else
+            ResultProps.Add('"shapes": []');
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ResultProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultProps.Free;
+        ShapesArray.Free;
+    end;
+end;
