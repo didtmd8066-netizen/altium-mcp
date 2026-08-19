@@ -1526,6 +1526,283 @@ begin
     end;
 end;
 
+// Diagnostic: report the PCB footprint model(s) (ISch_Implementation with
+// ModelType = 'PCBLIB') attached to each given designator's schematic
+// component, across all open SCH documents in the focused project.
+// EXPERIMENTAL - the exact Implementation API surface is unverified in this
+// codebase; a compile error here just means the property/method name needs
+// adjusting, not that anything was damaged.
+function GetComponentFootprintInfo(ROOT_DIR: String; DesignatorsList: TStringList): String;
+var
+    Project     : IProject;
+    Doc         : IDocument;
+    CurrentSch  : ISch_Document;
+    Iterator    : ISch_Iterator;
+    ImplIterator: ISch_Iterator;
+    Component   : ISch_Component;
+    Impl        : ISch_Implementation;
+    ResultArray : TStringList;
+    CompProps   : TStringList;
+    ImplArray   : TStringList;
+    ImplProps   : TStringList;
+    OutputLines : TStringList;
+    i           : Integer;
+    TargetSet   : TStringList;
+begin
+    Result := '';
+
+    Project := GetActiveSchProject;
+    If (Project = Nil) Then
+    begin
+        Result := 'ERROR: No project is currently open';
+        Exit;
+    end;
+
+    TargetSet := TStringList.Create;
+    TargetSet.Assign(DesignatorsList);
+
+    ResultArray := TStringList.Create;
+    try
+        For i := 0 to Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(i);
+            If Doc.DM_DocumentKind = 'SCH' Then
+            Begin
+                Client.OpenDocument('SCH', Doc.DM_FullPath);
+                CurrentSch := SchServer.GetSchDocumentByPath(Doc.DM_FullPath);
+
+                If (CurrentSch <> Nil) Then
+                Begin
+                    Iterator := CurrentSch.SchIterator_Create;
+                    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+
+                    Component := Iterator.FirstSchObject;
+                    While (Component <> Nil) Do
+                    Begin
+                        If (TargetSet.IndexOf(Component.Designator.Text) >= 0) Then
+                        Begin
+                            CompProps := TStringList.Create;
+                            ImplArray := TStringList.Create;
+                            try
+                                AddJSONProperty(CompProps, 'designator', Component.Designator.Text);
+                                AddJSONProperty(CompProps, 'sheet', Doc.DM_FullPath);
+
+                                ImplIterator := Component.SchIterator_Create;
+                                ImplIterator.AddFilter_ObjectSet(MkSet(eImplementation));
+                                Impl := ImplIterator.FirstSchObject;
+                                While (Impl <> Nil) do
+                                begin
+                                    ImplProps := TStringList.Create;
+                                    try
+                                        AddJSONProperty(ImplProps, 'model_name', Impl.ModelName);
+                                        AddJSONProperty(ImplProps, 'model_type', Impl.ModelType);
+                                        AddJSONProperty(ImplProps, 'description', Impl.Description);
+                                        AddJSONBoolean(ImplProps, 'is_current', Impl.IsCurrent);
+                                        ImplArray.Add(BuildJSONObject(ImplProps, 1));
+                                    finally
+                                        ImplProps.Free;
+                                    end;
+                                    Impl := ImplIterator.NextSchObject;
+                                end;
+                                Component.SchIterator_Destroy(ImplIterator);
+
+                                CompProps.Add(BuildJSONArray(ImplArray, 'implementations'));
+                                ResultArray.Add(BuildJSONObject(CompProps, 1));
+                            finally
+                                CompProps.Free;
+                                ImplArray.Free;
+                            end;
+                        End;
+
+                        Component := Iterator.NextSchObject;
+                    End;
+
+                    CurrentSch.SchIterator_Destroy(Iterator);
+                End;
+            End;
+        End;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(ResultArray);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR+'temp_component_footprint_info.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultArray.Free;
+        TargetSet.Free;
+    end;
+end;
+
+// EXPERIMENTAL: set the PCB footprint model name on the given designators'
+// schematic components. MappingsList holds "Designator|FootprintName"
+// entries (one designator per entry - split multi-designator BOM rows
+// before calling). For each component, every PCBLIB-type Implementation
+// has its ModelName rewritten to the target footprint.
+function SetComponentFootprint(MappingsList: TStringList): String;
+var
+    Project      : IProject;
+    Doc          : IDocument;
+    CurrentSch   : ISch_Document;
+    Iterator     : ISch_Iterator;
+    ImplIterator : ISch_Iterator;
+    Component    : ISch_Component;
+    Impl         : ISch_Implementation;
+    ResultArray  : TStringList;
+    ItemProps    : TStringList;
+    OutputLines  : TStringList;
+    i, PipePos, MatchIdx : Integer;
+    DesigMap, FootMap : TStringList;
+    TargetDesig  : String;
+    TargetFoot   : String;
+    HandledSet   : TStringList;
+    SuccessCount : Integer;
+    FoundPcbLib  : Boolean;
+begin
+    Result := '';
+
+    Project := GetActiveSchProject;
+    If (Project = Nil) Then
+    begin
+        Result := 'ERROR: No project is currently open';
+        Exit;
+    end;
+
+    DesigMap := TStringList.Create;
+    FootMap := TStringList.Create;
+    For i := 0 to MappingsList.Count - 1 do
+    begin
+        PipePos := Pos('|', MappingsList[i]);
+        if PipePos > 0 then
+        begin
+            DesigMap.Add(Trim(Copy(MappingsList[i], 1, PipePos - 1)));
+            FootMap.Add(Trim(Copy(MappingsList[i], PipePos + 1, Length(MappingsList[i]))));
+        end;
+    end;
+
+    HandledSet := TStringList.Create;
+    ResultArray := TStringList.Create;
+    SuccessCount := 0;
+
+    try
+        For i := 0 to Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(i);
+            If Doc.DM_DocumentKind = 'SCH' Then
+            Begin
+                Client.OpenDocument('SCH', Doc.DM_FullPath);
+                CurrentSch := SchServer.GetSchDocumentByPath(Doc.DM_FullPath);
+
+                If (CurrentSch <> Nil) Then
+                Begin
+                    Iterator := CurrentSch.SchIterator_Create;
+                    Iterator.AddFilter_ObjectSet(MkSet(eSchComponent));
+
+                    Component := Iterator.FirstSchObject;
+                    While (Component <> Nil) Do
+                    Begin
+                        MatchIdx := DesigMap.IndexOf(Component.Designator.Text);
+                        If (MatchIdx >= 0) Then
+                        Begin
+                            TargetDesig := DesigMap[MatchIdx];
+                            TargetFoot := FootMap[MatchIdx];
+
+                            ItemProps := TStringList.Create;
+                            try
+                                AddJSONProperty(ItemProps, 'designator', TargetDesig);
+                                AddJSONProperty(ItemProps, 'target_footprint', TargetFoot);
+
+                                try
+                                    FoundPcbLib := False;
+                                    ImplIterator := Component.SchIterator_Create;
+                                    ImplIterator.AddFilter_ObjectSet(MkSet(eImplementation));
+                                    Impl := ImplIterator.FirstSchObject;
+                                    While (Impl <> Nil) do
+                                    begin
+                                        if Impl.ModelType = 'PCBLIB' then
+                                        begin
+                                            Impl.ModelName := TargetFoot;
+                                            FoundPcbLib := True;
+                                        end;
+                                        Impl := ImplIterator.NextSchObject;
+                                    end;
+                                    Component.SchIterator_Destroy(ImplIterator);
+
+                                    Component.GraphicallyInvalidate;
+
+                                    if FoundPcbLib then
+                                    begin
+                                        AddJSONBoolean(ItemProps, 'success', True);
+                                        SuccessCount := SuccessCount + 1;
+                                    end
+                                    else
+                                    begin
+                                        AddJSONBoolean(ItemProps, 'success', False);
+                                        AddJSONProperty(ItemProps, 'error', 'No PCBLIB implementation found on this component');
+                                    end;
+                                except
+                                    AddJSONBoolean(ItemProps, 'success', False);
+                                    AddJSONProperty(ItemProps, 'error', 'Exception while setting footprint ModelName - field may not be writable for this component');
+                                end;
+
+                                ResultArray.Add(BuildJSONObject(ItemProps, 1));
+                                HandledSet.Add(TargetDesig);
+                            finally
+                                ItemProps.Free;
+                            end;
+                        End;
+
+                        Component := Iterator.NextSchObject;
+                    End;
+
+                    CurrentSch.SchIterator_Destroy(Iterator);
+                    CurrentSch.GraphicallyInvalidate;
+                End;
+            End;
+        End;
+
+        for i := 0 to DesigMap.Count - 1 do
+        begin
+            if (HandledSet.IndexOf(DesigMap[i]) < 0) then
+            begin
+                ItemProps := TStringList.Create;
+                try
+                    AddJSONProperty(ItemProps, 'designator', DesigMap[i]);
+                    AddJSONBoolean(ItemProps, 'success', False);
+                    AddJSONProperty(ItemProps, 'error', 'Designator not found on any open schematic document');
+                    ResultArray.Add(BuildJSONObject(ItemProps, 1));
+                finally
+                    ItemProps.Free;
+                end;
+            end;
+        end;
+
+        ItemProps := TStringList.Create;
+        try
+            AddJSONBoolean(ItemProps, 'success', SuccessCount > 0);
+            AddJSONInteger(ItemProps, 'requested_count', DesigMap.Count);
+            AddJSONInteger(ItemProps, 'success_count', SuccessCount);
+            ItemProps.Add(BuildJSONArray(ResultArray, 'results'));
+
+            OutputLines := TStringList.Create;
+            try
+                OutputLines.Text := BuildJSONObject(ItemProps);
+                Result := OutputLines.Text;
+            finally
+                OutputLines.Free;
+            end;
+        finally
+            ItemProps.Free;
+        end;
+    finally
+        ResultArray.Free;
+        HandledSet.Free;
+        DesigMap.Free;
+        FootMap.Free;
+    end;
+end;
+
 // Function to get all schematic component data
 function GetSchematicData(ROOT_DIR: String): String;
 var

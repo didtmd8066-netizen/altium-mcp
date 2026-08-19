@@ -1535,6 +1535,81 @@ async def set_component_library_source(ctx: Context, cmp_designators: list, libr
     return json.dumps(result, indent=2)
 
 @mcp.tool()
+async def get_component_footprint_info(ctx: Context, cmp_designators: list) -> str:
+    """
+    EXPERIMENTAL diagnostic tool: report the PCB footprint model(s) attached
+    to each given designator's schematic component (ISch_Implementation
+    entries with ModelType 'PCBLIB' - model_name, model_data_file_name,
+    is_current). Run this before set_component_footprint to confirm the API
+    actually exposes these fields on this Altium version/project; a clean
+    Altium script compile error here means the field/method names need
+    adjusting in schematic_utils.pas, not that anything was damaged.
+
+    Args:
+        cmp_designators (list): List of designators of the components (e.g., ["R1", "C5", "U3"])
+
+    Returns:
+        str: JSON array, one entry per component with designator, sheet,
+             and implementations: [{model_name, model_type,
+             description, is_current}, ...]
+    """
+    logger.info(f"Getting footprint info for components: {cmp_designators}")
+
+    response = await altium_bridge.execute_command(
+        "get_component_footprint_info",
+        {"designators": cmp_designators}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting component footprint info: {error_msg}")
+        return json.dumps({"error": f"Failed to get component footprint info: {error_msg}"})
+
+    result = response.get("result", [])
+    if not result:
+        logger.info(f"No footprint info found for designators: {cmp_designators}")
+        return json.dumps({"message": "No footprint info found for the specified components"})
+
+    logger.info(f"Retrieved footprint info for components")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def set_component_footprint(ctx: Context, mappings: list) -> str:
+    """
+    EXPERIMENTAL: Set the PCB footprint model name on schematic components,
+    e.g. to bulk-apply a BOM/footprint spreadsheet's target footprint column.
+    Run get_component_footprint_info first to confirm the field is writable
+    for these components - be ready for this to fail outright (a clean
+    Altium script error, not data corruption) if the underlying API does
+    not expose ModelName as writable.
+
+    Args:
+        mappings (list): One "Designator|FootprintName" string per component,
+            e.g. ["C1|C1206(3216)", "C5|C1206(3216)", "C18|C0402(1005)"].
+            Split multi-designator BOM rows into one entry per designator
+            before calling.
+
+    Returns:
+        str: JSON object with requested_count, success_count, and a
+             per-designator results breakdown (success/error).
+    """
+    logger.info(f"Setting footprint for {len(mappings)} component mapping(s)")
+
+    response = await altium_bridge.execute_command(
+        "set_component_footprint",
+        {"mappings": mappings}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error setting component footprint: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to set component footprint: {error_msg}"})
+
+    result = response.get("result", {})
+    logger.info(f"Set component footprint complete")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
 async def get_all_nets(ctx: Context) -> str:
     """
     Return every unique net name in the active PCB document.

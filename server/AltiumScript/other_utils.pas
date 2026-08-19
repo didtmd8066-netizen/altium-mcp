@@ -186,7 +186,9 @@ begin
     end
     else if (CommandName = 'get_schematic_data')              or
             (CommandName = 'get_component_library_source')   or
-            (CommandName = 'set_component_library_source')   then
+            (CommandName = 'set_component_library_source')   or
+            (CommandName = 'get_component_footprint_info')   or
+            (CommandName = 'set_component_footprint')        then
     begin
         DocumentKind := 'SCH';
     end

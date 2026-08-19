@@ -133,6 +133,97 @@ begin
     end;
 end;
 
+// Extract the get component footprint info logic
+function ExecuteGetComponentFootprintInfo(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i: Integer;
+    DesignatorsList: TStringList;
+begin
+    DesignatorsList := TStringList.Create;
+    try
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"designators"', RequestData[i]) > 0) then
+            begin
+                i := i + 1;
+
+                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+                begin
+                    ParamValue := RequestData[i];
+                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                    ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
+                    ParamValue := Trim(ParamValue);
+
+                    if (ParamValue <> '') and (ParamValue <> '[') then
+                        DesignatorsList.Add(ParamValue);
+
+                    i := i + 1;
+                end;
+
+                break;
+            end;
+        end;
+
+        if DesignatorsList.Count > 0 then
+        begin
+            Result := GetComponentFootprintInfo(ROOT_DIR, DesignatorsList);
+        end
+        else
+        begin
+            ShowMessage('Error: No designators found for get_component_footprint_info');
+            Result := '';
+        end;
+    finally
+        DesignatorsList.Free;
+    end;
+end;
+
+// Extract the set component footprint logic
+function ExecuteSetComponentFootprint(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i: Integer;
+    MappingsList: TStringList;
+begin
+    MappingsList := TStringList.Create;
+    try
+        for i := 0 to RequestData.Count - 1 do
+        begin
+            if (Pos('"mappings"', RequestData[i]) > 0) then
+            begin
+                i := i + 1;
+
+                while (i < RequestData.Count) and (Pos(']', RequestData[i]) = 0) do
+                begin
+                    ParamValue := RequestData[i];
+                    ParamValue := StringReplace(ParamValue, '"', '', REPLACEALL);
+                    ParamValue := StringReplace(ParamValue, ',', '', REPLACEALL);
+                    ParamValue := Trim(ParamValue);
+
+                    if (ParamValue <> '') and (ParamValue <> '[') then
+                        MappingsList.Add(ParamValue);
+
+                    i := i + 1;
+                end;
+
+                break;
+            end;
+        end;
+
+        if MappingsList.Count > 0 then
+        begin
+            Result := SetComponentFootprint(MappingsList);
+        end
+        else
+        begin
+            Result := '{"success": false, "error": "No mappings provided"}';
+        end;
+    finally
+        MappingsList.Free;
+    end;
+end;
+
 // Extract the set component library source logic
 function ExecuteSetComponentLibrarySource(RequestData: TStringList): String;
 var
@@ -1346,6 +1437,10 @@ begin
             Result := ExecuteGetComponentLibrarySource(RequestData);
         'set_component_library_source':
             Result := ExecuteSetComponentLibrarySource(RequestData);
+        'get_component_footprint_info':
+            Result := ExecuteGetComponentFootprintInfo(RequestData);
+        'set_component_footprint':
+            Result := ExecuteSetComponentFootprint(RequestData);
         'get_all_nets':
             Result := GetAllNets(ROOT_DIR);            
         'create_net_class':
