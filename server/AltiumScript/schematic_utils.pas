@@ -1729,6 +1729,17 @@ begin
                                     end;
                                     Component.SchIterator_Destroy(ImplIterator);
 
+                                    if not FoundPcbLib then
+                                    begin
+                                        Impl := SchServer.SchObjectFactory(eImplementation, eCreate_Default);
+                                        Impl.ModelType := 'PCBLIB';
+                                        Impl.ModelName := TargetFoot;
+                                        Impl.IsCurrent := True;
+                                        Component.AddSchObject(Impl);
+                                        FoundPcbLib := True;
+                                        AddJSONBoolean(ItemProps, 'created_new', True);
+                                    end;
+
                                     Component.GraphicallyInvalidate;
 
                                     if FoundPcbLib then
@@ -1800,6 +1811,115 @@ begin
         HandledSet.Free;
         DesigMap.Free;
         FootMap.Free;
+    end;
+end;
+
+// Diagnostic: scan all open SCH documents for NetLabel and PowerObject (power
+// port symbol, e.g. GND/VCC) primitives whose text matches NetNameFilter
+// (case-insensitive substring match), reporting each one's Color (BGR
+// integer + hex string) and sheet location. Use this to find where a net's
+// label/power-port color was manually overridden (e.g. to black) instead of
+// left at the sheet's default.
+function ScanNetTextColors(ROOT_DIR: String; NetNameFilter: String): String;
+var
+    Project      : IProject;
+    Doc          : IDocument;
+    CurrentSch   : ISch_Document;
+    Iterator     : ISch_Iterator;
+    Prim         : ISch_GraphicalObject;
+    NetLabelVar  : ISch_NetLabel;
+    PowerVar     : ISch_PowerObject;
+    PrimText     : String;
+    PrimColor    : Integer;
+    PrimKind     : String;
+    ResultArray  : TStringList;
+    ItemProps    : TStringList;
+    OutputLines  : TStringList;
+    i            : Integer;
+    UpperFilter  : String;
+begin
+    Result := '';
+
+    Project := GetActiveSchProject;
+    If (Project = Nil) Then
+    begin
+        Result := 'ERROR: No project is currently open';
+        Exit;
+    end;
+
+    UpperFilter := UpperCase(NetNameFilter);
+
+    ResultArray := TStringList.Create;
+    try
+        For i := 0 to Project.DM_LogicalDocumentCount - 1 Do
+        Begin
+            Doc := Project.DM_LogicalDocuments(i);
+            If Doc.DM_DocumentKind = 'SCH' Then
+            Begin
+                Client.OpenDocument('SCH', Doc.DM_FullPath);
+                CurrentSch := SchServer.GetSchDocumentByPath(Doc.DM_FullPath);
+
+                If (CurrentSch <> Nil) Then
+                Begin
+                    Iterator := CurrentSch.SchIterator_Create;
+                    Iterator.AddFilter_ObjectSet(MkSet(eNetLabel, ePowerObject));
+
+                    Prim := Iterator.FirstSchObject;
+                    While (Prim <> Nil) Do
+                    Begin
+                        PrimText := '';
+                        PrimColor := -1;
+                        PrimKind := '';
+
+                        case Prim.ObjectId of
+                            eNetLabel: begin
+                                NetLabelVar := Prim;
+                                PrimText := NetLabelVar.Text;
+                                PrimColor := NetLabelVar.Color;
+                                PrimKind := 'NetLabel';
+                            end;
+                            ePowerObject: begin
+                                PowerVar := Prim;
+                                PrimText := PowerVar.Text;
+                                PrimColor := PowerVar.Color;
+                                PrimKind := 'PowerObject';
+                            end;
+                        end;
+
+                        If (Pos(UpperFilter, UpperCase(PrimText)) > 0) Then
+                        Begin
+                            ItemProps := TStringList.Create;
+                            try
+                                AddJSONProperty(ItemProps, 'kind', PrimKind);
+                                AddJSONProperty(ItemProps, 'text', PrimText);
+                                AddJSONInteger(ItemProps, 'color_bgr', PrimColor);
+                                AddJSONBoolean(ItemProps, 'is_black', PrimColor = 0);
+                                AddJSONProperty(ItemProps, 'sheet', Doc.DM_FullPath);
+                                AddJSONNumber(ItemProps, 'x_mils', CoordToMils(Prim.Location.X));
+                                AddJSONNumber(ItemProps, 'y_mils', CoordToMils(Prim.Location.Y));
+                                ResultArray.Add(BuildJSONObject(ItemProps, 1));
+                            finally
+                                ItemProps.Free;
+                            end;
+                        End;
+
+                        Prim := Iterator.NextSchObject;
+                    End;
+
+                    CurrentSch.SchIterator_Destroy(Iterator);
+                End;
+            End;
+        End;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONArray(ResultArray);
+            Result := WriteJSONToFile(OutputLines, ROOT_DIR+'temp_net_text_colors.json');
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ResultArray.Free;
     end;
 end;
 

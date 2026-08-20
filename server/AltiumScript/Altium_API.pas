@@ -224,6 +224,36 @@ begin
     end;
 end;
 
+// Extract the scan net text colors logic
+function ExecuteScanNetTextColors(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i, ValueStart: Integer;
+    NetNameFilter: String;
+begin
+    NetNameFilter := '';
+
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"net_name_filter"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            ParamValue := Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1);
+            ParamValue := TrimJSON(ParamValue);
+            NetNameFilter := ParamValue;
+        end;
+    end;
+
+    if NetNameFilter <> '' then
+    begin
+        Result := ScanNetTextColors(ROOT_DIR, NetNameFilter);
+    end
+    else
+    begin
+        Result := '{"success": false, "error": "No net_name_filter provided"}';
+    end;
+end;
+
 // Extract the set component library source logic
 function ExecuteSetComponentLibrarySource(RequestData: TStringList): String;
 var
@@ -291,6 +321,36 @@ begin
         end;
     finally
         DesignatorsList.Free;
+    end;
+end;
+
+// Extract the get net color logic
+function ExecuteGetNetColor(RequestData: TStringList): String;
+var
+    ParamValue: String;
+    i, ValueStart: Integer;
+    NetName: String;
+begin
+    NetName := '';
+
+    for i := 0 to RequestData.Count - 1 do
+    begin
+        if (Pos('"net_name"', RequestData[i]) > 0) then
+        begin
+            ValueStart := Pos(':', RequestData[i]) + 1;
+            ParamValue := Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1);
+            ParamValue := TrimJSON(ParamValue);
+            NetName := ParamValue;
+        end;
+    end;
+
+    if NetName <> '' then
+    begin
+        Result := GetNetColor(ROOT_DIR, NetName);
+    end
+    else
+    begin
+        Result := '{"success": false, "error": "No net_name provided"}';
     end;
 end;
 
@@ -1441,10 +1501,14 @@ begin
             Result := ExecuteGetComponentFootprintInfo(RequestData);
         'set_component_footprint':
             Result := ExecuteSetComponentFootprint(RequestData);
+        'scan_net_text_colors':
+            Result := ExecuteScanNetTextColors(RequestData);
         'get_all_nets':
             Result := GetAllNets(ROOT_DIR);            
         'create_net_class':
-            Result := ExecuteCreateNetClass(RequestData);            
+            Result := ExecuteCreateNetClass(RequestData);
+        'get_net_color':
+            Result := ExecuteGetNetColor(RequestData);            
         'get_all_component_data':
             Result := GetAllComponentData(ROOT_DIR, False);            
         'take_view_screenshot':

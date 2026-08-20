@@ -188,7 +188,8 @@ begin
             (CommandName = 'get_component_library_source')   or
             (CommandName = 'set_component_library_source')   or
             (CommandName = 'get_component_footprint_info')   or
-            (CommandName = 'set_component_footprint')        then
+            (CommandName = 'set_component_footprint')        or
+            (CommandName = 'scan_net_text_colors')            then
     begin
         DocumentKind := 'SCH';
     end

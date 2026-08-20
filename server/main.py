@@ -1610,6 +1610,72 @@ async def set_component_footprint(ctx: Context, mappings: list) -> str:
     return json.dumps(result, indent=2)
 
 @mcp.tool()
+async def get_net_color(ctx: Context, net_name: str) -> str:
+    """
+    Get the display Color of a net on the active PCB document - the color
+    set via right-click a net > Change Net Color (or the Net Colors panel).
+    Use this to check whether a net's assigned color survived an
+    Update PCB Document / ECO, since that color is a PCB-side net property
+    separate from anything on the schematic.
+
+    Args:
+        net_name (str): Exact net name, e.g. "GND"
+
+    Returns:
+        str: JSON object with net, color_bgr (raw Altium TColor integer,
+             BGR order), success.
+    """
+    logger.info(f"Getting net color for: {net_name}")
+
+    response = await altium_bridge.execute_command(
+        "get_net_color",
+        {"net_name": net_name}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error getting net color: {error_msg}")
+        return json.dumps({"success": False, "error": f"Failed to get net color: {error_msg}"})
+
+    result = response.get("result", {})
+    logger.info(f"Retrieved net color")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
+async def scan_net_text_colors(ctx: Context, net_name_filter: str) -> str:
+    """
+    Scan all open SCH documents for NetLabel and PowerObject (power port
+    symbol, e.g. GND/VCC) primitives whose text contains net_name_filter
+    (case-insensitive substring match). Use this to find where a net's
+    label/power-port color was manually overridden (e.g. to black) instead
+    of left at the sheet default.
+
+    Args:
+        net_name_filter (str): Substring to match against label/power-port
+            text, e.g. "GND"
+
+    Returns:
+        str: JSON array of matches: [{kind, text, color_bgr, is_black,
+             sheet, x_mils, y_mils}, ...]. color_bgr is the raw Altium
+             TColor integer (BGR order); is_black is true when it's 0.
+    """
+    logger.info(f"Scanning net text colors for filter: {net_name_filter}")
+
+    response = await altium_bridge.execute_command(
+        "scan_net_text_colors",
+        {"net_name_filter": net_name_filter}
+    )
+
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        logger.error(f"Error scanning net text colors: {error_msg}")
+        return json.dumps({"error": f"Failed to scan net text colors: {error_msg}"})
+
+    result = response.get("result", [])
+    logger.info(f"Scanned net text colors")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
 async def get_all_nets(ctx: Context) -> str:
     """
     Return every unique net name in the active PCB document.

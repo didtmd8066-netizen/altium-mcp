@@ -610,6 +610,66 @@ begin
     end;
 end;
 
+// Diagnostic: report the display Color of the given net on the active PCB
+// document (the color set via right-click a net > Change Net Color).
+function GetNetColor(ROOT_DIR: String; NetName: String): String;
+var
+    Board       : IPCB_Board;
+    Net         : IPCB_Net;
+    Iterator    : IPCB_BoardIterator;
+    ItemProps   : TStringList;
+    OutputLines : TStringList;
+    Found       : Boolean;
+begin
+    Result := '{"success": false, "error": "No PCB board found"}';
+
+    Board := PCBServer.GetCurrentPCBBoard;
+    if Board = nil then Exit;
+
+    Found := False;
+    ItemProps := TStringList.Create;
+    try
+        Iterator := Board.BoardIterator_Create;
+        Iterator.AddFilter_ObjectSet(MkSet(eNetObject));
+        Iterator.AddFilter_LayerSet(AllLayers);
+        Iterator.AddFilter_Method(eProcessAll);
+
+        Net := Iterator.FirstPCBObject;
+        while (Net <> nil) do
+        begin
+            if Net.Name = NetName then
+            begin
+                AddJSONProperty(ItemProps, 'net', Net.Name);
+                AddJSONInteger(ItemProps, 'color_bgr', Net.Color);
+                Found := True;
+            end;
+            Net := Iterator.NextPCBObject;
+        end;
+        Board.BoardIterator_Destroy(Iterator);
+
+        if Found then
+        begin
+            AddJSONBoolean(ItemProps, 'success', True);
+        end
+        else
+        begin
+            ItemProps.Clear;
+            AddJSONBoolean(ItemProps, 'success', False);
+            AddJSONProperty(ItemProps, 'error', 'Net not found on active PCB document');
+        end;
+
+        OutputLines := TStringList.Create;
+        try
+            OutputLines.Text := BuildJSONObject(ItemProps);
+            Result := OutputLines.Text;
+        finally
+            OutputLines.Free;
+        end;
+    finally
+        ItemProps.Free;
+    end;
+end;
+
 // Function to create a net class and add nets to it
 function CreateNetClass(ClassName: String; NetNames: TStringList): String;
 var
