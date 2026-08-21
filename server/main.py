@@ -2520,6 +2520,140 @@ async def get_pcb_rules(ctx: Context) -> str:
     logger.info(f"Retrieved PCB rules data")
     return json.dumps(rules_data, indent=2)
 
+# ---------------------------------------------------------------------------
+# Advanced Clearance matrix reader
+#
+# IPCB_ClearanceConstraint does not expose the per-object-pair "Advanced" matrix
+# to DelphiScript (Gap[a,b], GetState_Gap(a,b) and State_Gap[a,b] are all
+# undeclared identifiers), so this reads the saved .PcbDoc directly instead.
+# Altium stores each rule as a plain pipe-delimited parameter string inside the
+# binary, with the matrix in OBJECTCLEARANCES as
+#     ClearanceObj_<A>-ClearanceObj_<B>:<coord>;...
+# listing only the cells that differ from GENERICCLEARANCE. Coordinates are in
+# Altium internal units (10000 per mil).
+# ---------------------------------------------------------------------------
+
+CLEARANCE_COORD_PER_MIL = 10000.0
+CLEARANCE_MM_PER_MIL = 0.0254
+
+# Object kinds in the order Altium shows them on the Advanced tab
+CLEARANCE_OBJECT_KINDS = [
+    "Track", "Arc", "SMDPad", "THPad", "Via",
+    "Fill", "Poly", "Region", "Text", "Hole",
+]
+
+
+def _clearance_coord_to_mm(coord) -> float:
+    return round(int(coord) / CLEARANCE_COORD_PER_MIL * CLEARANCE_MM_PER_MIL, 4)
+
+
+def _clearance_gapstr_to_mm(text):
+    """Convert a rule parameter gap string such as '7.874mil' or '0.2mm' to mm."""
+    m = re.match(r"\s*(-?[\d.]+)\s*(mil|mm)?\s*$", text or "")
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = m.group(2) or "mil"
+    return round(value * CLEARANCE_MM_PER_MIL, 4) if unit == "mil" else round(value, 4)
+
+
+def _parse_clearance_rules(pcbdoc_path: str) -> list:
+    """Extract every Clearance rule (with its Advanced matrix) from a .PcbDoc."""
+    with open(pcbdoc_path, "rb") as f:
+        data = f.read()
+
+    rules = []
+    for match in re.finditer(rb"\|SELECTION=[^\x00]+", data):
+        record = match.group(0).decode("latin-1")
+        if "|RULEKIND=Clearance|" not in record:
+            continue
+
+        def param(key):
+            m = re.search(r"\|" + key + r"=([^|]*)", record)
+            return m.group(1) if m else None
+
+        generic_mm = _clearance_gapstr_to_mm(param("GENERICCLEARANCE"))
+
+        overrides = {}
+        for pair in (param("OBJECTCLEARANCES") or "").split(";"):
+            m = re.match(r"ClearanceObj_(\w+)-ClearanceObj_(\w+):(-?\d+)", pair.strip())
+            if m:
+                overrides[(m.group(1), m.group(2))] = _clearance_coord_to_mm(m.group(3))
+
+        # The matrix is symmetric; Altium stores only one direction per pair.
+        matrix = {}
+        for a in CLEARANCE_OBJECT_KINDS:
+            matrix[a] = {}
+            for b in CLEARANCE_OBJECT_KINDS:
+                matrix[a][b] = overrides.get((a, b), overrides.get((b, a), generic_mm))
+
+        rules.append({
+            "name": param("NAME"),
+            "enabled": param("ENABLED") == "TRUE",
+            "priority": param("PRIORITY"),
+            "net_scope": param("NETSCOPE"),
+            "layer_kind": param("LAYERKIND"),
+            "scope1": param("SCOPE1EXPRESSION"),
+            "scope2": param("SCOPE2EXPRESSION"),
+            "unique_id": param("UNIQUEID"),
+            "simple_gap_mm": _clearance_gapstr_to_mm(param("GAP")),
+            "generic_clearance_mm": generic_mm,
+            "ignore_pad_to_pad_in_footprint": param("IGNOREPADTOPADCLEARANCEINFOOTPRINT") == "TRUE",
+            "object_kinds": CLEARANCE_OBJECT_KINDS,
+            "matrix_mm": matrix,
+            "overrides_mm": [
+                {"a": a, "b": b, "gap_mm": gap}
+                for (a, b), gap in sorted(overrides.items())
+                if gap != generic_mm
+            ],
+        })
+    return rules
+
+
+@mcp.tool()
+async def get_clearance_matrix(ctx: Context, pcbdoc_path: str, rule_name: str = "") -> str:
+    """
+    Read the Advanced (per-object-pair) clearance matrix of Clearance rules.
+
+    Reads the .PcbDoc file on disk directly rather than querying the running
+    Altium instance, because the Advanced matrix is not exposed to DelphiScript.
+    Unsaved edits in Altium are therefore NOT reflected - save the PCB first.
+
+    Args:
+        pcbdoc_path (str): Full path to the .PcbDoc file
+        rule_name (str): Optional exact rule name; omit to return every Clearance rule
+
+    Returns:
+        str: JSON with each rule's scopes, generic clearance and full 10x10 matrix
+             in mm, plus the list of cells that differ from the generic value
+    """
+    logger.info(f"Reading clearance matrix from {pcbdoc_path} (rule_name={rule_name!r})")
+
+    if not os.path.isfile(pcbdoc_path):
+        return json.dumps({"error": f"PcbDoc file not found: {pcbdoc_path}"})
+
+    try:
+        rules = _parse_clearance_rules(pcbdoc_path)
+    except Exception as e:
+        logger.error(f"Error parsing clearance rules: {e}")
+        return json.dumps({"error": f"Failed to parse PcbDoc: {e}"})
+
+    if rule_name:
+        rules = [r for r in rules if r["name"] == rule_name]
+        if not rules:
+            return json.dumps({"error": f"Clearance rule not found: {rule_name}"})
+
+    if not rules:
+        return json.dumps({"message": "No Clearance rules found in this PcbDoc"})
+
+    return json.dumps({
+        "pcbdoc_path": pcbdoc_path,
+        "note": "Values read from the saved file; unsaved Altium edits are not included.",
+        "rule_count": len(rules),
+        "rules": rules,
+    }, indent=2)
+
+
 @mcp.tool()
 async def create_pcb_clearance_rule(ctx: Context, scope1: str, scope2: str, gap_mm: float, rule_name: str = "", net_scope: str = "AnyNet") -> str:
     """
