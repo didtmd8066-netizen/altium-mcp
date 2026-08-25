@@ -205,7 +205,9 @@ class AltiumConfig:
             )
             
             if selected_path:
-                self.script_path = selected_path
+                # tkinter returns forward slashes; Altium's RunScript only
+                # resolves the project when the path uses backslashes.
+                self.script_path = os.path.normpath(selected_path)
             else:
                 logger.error("No script file selected. Some functionality may not work.")
                 print("Warning: No script file selected. Please make sure to create one.")
@@ -362,6 +364,29 @@ class AltiumBridge:
         if not os.path.exists(self.config.script_path):
             logger.error(f"Script file not found at: {self.config.script_path}")
             print(f"Error: Script file not found. Please check the configuration.")
+            return False
+
+        # Altium rewrites the .PrjScr and drops every [DocumentN] section when it
+        # opens the project while the .pas files are missing - which is what
+        # happens if this checkout is moved while Altium still has the old path
+        # loaded. The project then contains no modules, so RunScript pops a modal
+        # "cannot find script" dialog and every call times out after 120s.
+        # Fail fast with an actionable message instead.
+        try:
+            with open(self.config.script_path, "r", encoding="utf-8", errors="replace") as f:
+                project_text = f.read()
+        except OSError as e:
+            logger.error(f"Could not read script project {self.config.script_path}: {e}")
+            return False
+
+        if "[Document" not in project_text:
+            msg = (f"Script project has no documents: {self.config.script_path}\n"
+                   f"Altium emptied it (this happens after moving the checkout). "
+                   f"Restore it with:\n"
+                   f"    git checkout -- server/AltiumScript/Altium_API.PrjScr\n"
+                   f"then close the script project in Altium before retrying.")
+            logger.error(msg)
+            print(f"Error: {msg}")
             return False
 
         try:
