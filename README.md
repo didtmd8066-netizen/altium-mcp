@@ -150,6 +150,10 @@ The server provides several tools to interact with Altium Designer:
 - `get_component_property_values`: Get the values of a specific property for all components
 - `get_component_data`: Get detailed data for specific components by designator
 - `get_component_pins`: Get pin information for specified components
+- `get_component_library_source`: Report each schematic component's library link fields (LibReference, SourceLibraryName). Diagnoses why a component fails to resolve during Update PCB Document - e.g. one whose Properties panel shows Source = "Altium Content Vault".
+- `set_component_library_source`: Relink schematic components away from a managed source (Vault) to a local file-based library, by writing SourceLibraryName (and optionally LibReference) on the placed instances.
+- `get_component_footprint_info`: Report the PCB footprint model(s) attached to each designator (ISch_Implementation entries with ModelType `PCBLIB`).
+- `set_component_footprint`: Set the PCB footprint model name on schematic components - e.g. to bulk-apply the target footprint column of a BOM spreadsheet.
 
 ### Schematic/Symbol
 - `get_schematic_data`: Get schematic data for specified components
@@ -159,6 +163,7 @@ The server provides several tools to interact with Altium Designer:
 - `get_symbol_placement_rules`: Create symbol's helper tool that reads `~\AppData\Roaming\Claude\Claude Extensions\local.dxt.altium-mcp\server\symbol_placement_rules.txt` to get pin placement rules for symbol creation.
 - `get_library_symbol_reference`: Create symbol's helper tool to use an open library symbol as an example to create the symbol
 - `search_library_symbol`: Search for a symbol by name in a schematic library (.SchLib) and navigate to it. Supports partial name matching. Will open the library file in Altium if a path is provided, or show a file picker if not.
+- `scan_net_text_colors`: Scan all open SCH documents for NetLabel and PowerObject primitives matching a net name, reporting each one's color. Finds where a net's label was manually overridden instead of left at the sheet default.
 
 ![Symbol Creator](assets/symbol_creator.gif)
 
@@ -169,6 +174,14 @@ The server provides several tools to interact with Altium Designer:
 - `get_pcb_layer_stackup`: Gets stackup info like dielectric, layer thickness, etc.
 - `set_pcb_layer_visibility` ([YouTube](https://youtu.be/XaWs5A6-h30)): Turn on or off any group of layers. For example turn on inner layers. Turn off silk.
 - `get_pcb_rules`: Gets the rule descriptions for all pcb rules in layout.
+- `create_pcb_clearance_rule`: Create a new Clearance Constraint design rule from two scope queries and a gap in mm.
+- `get_clearance_matrix`: Read the **Advanced** (per-object-pair) clearance matrix of Clearance rules - the full Track/Arc/SMDPad/THPad/Via/Fill/Poly/Region/Text/Hole grid that `get_pcb_rules` flattens to a single gap. DelphiScript does not expose this matrix, so the tool parses the saved `.PcbDoc` directly; unsaved edits are not reflected.
+- `get_net_color`: Get a net's display Color on the active PCB (set via right-click a net > Change Net Color). Use it to check whether an assigned color survived an Update PCB Document / ECO.
+- `get_track_widths_by_net`: Get the actual routed width (mm) of every Track for each requested net - design rules only enforce a minimum and don't reflect what was really drawn.
+- `get_net_routing_status`: Find nets with more than one pad but no copper anywhere, i.e. still pure ratsnest.
+- `get_plane_layers_for_net`: Find which layer(s) hold a Region or Polygon for a net, with bounding boxes in mm - tells a full-board ground plane apart from a small localized pour.
+- `get_selected_tracks_and_arcs`: Get the exact geometry (mm) of every currently-selected Track and Arc primitive.
+- `apply_track_edits`: Edit specific currently-selected Tracks by exact coordinate match - e.g. move part of a board outline by an exact computed offset without risking a generic geometric transform.
 - `get_selected_components_coordinates`: Get position, rotation, layer, and footprint information for currently selected components
 - `move_components`: Move specified components by X and Y offsets
 - `set_component_position`: Set one component's absolute position and rotation
@@ -186,6 +199,8 @@ The cool thing about layout duplication this way as opposed to with Altium's bui
 - `create_pcb_footprint`: Create a new PCB footprint in the currently active .PcbLib document. Supports SMD pads (Rect, Round, Oval shapes) defined in mm relative to the component origin. Auto-generates a courtyard on Mech 15 and silkscreen with a pin 1 indicator (gap in the top-left corner), or accepts explicit courtyard dimensions. Contributed by [coffeedust](https://github.com/coffeedust) ([PR #7](https://github.com/coffeenmusic/altium-mcp/pull/7)).
 - `get_footprint_primitives`: Inventory a .PcbLib (per-footprint primitive counts) or dump complete footprint geometry - pads with full stack/hole detail, tracks, arcs, fills, texts, regions - in mils. The reference source when recreating or verifying footprints. 3D bodies are excluded as models.
 - `create_footprints_batch`: Create many footprints in one script run from a plain-text spec file: SMD + through-hole pads (holes, slots, plating, rotation, full pad stack), tracks, arcs, fills, texts, and regions on any layer. Round-trip verified against complete production SMD and through-hole libraries.
+- `get_current_pcblib_footprint_info`: Get the primitive composition and overall bounding box (mm) of whichever footprint is currently focused in the active .PcbLib.
+- `scale_current_pcblib_footprint`: Uniformly scale every primitive of the currently focused footprint around its origin - e.g. to fix a library imported at the wrong unit scale.
 
 ### Both
 - `get_screenshot`: Take a screenshot of the Altium PCB window or Schematic Window that is the current view, returned as a proper image the agent can see. For PCB views, an optional `zoom_to` list of designators makes Altium zoom to those components before capture so they fill the frame. It should auto focus either document type if it is open but a different document type is focused.
