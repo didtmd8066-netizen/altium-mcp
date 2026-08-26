@@ -1920,6 +1920,96 @@ async def place_components(ctx: Context, placements: list) -> str:
     logger.info(f"Placed components successfully")
     return json.dumps({"success": True, "result": result}, indent=2)
 
+@mcp.tool()
+async def place_testpoints_on_connector(ctx: Context, connector: str,
+                                        dry_run: bool = True) -> str:
+    """
+    Drop each of a connector's test points onto the pin carrying its net.
+
+    The convention this automates: a test point sits at the exact pad centre of
+    the connector pin it probes, on the opposite side of the board, and pins
+    without a test point (grounds, spares) simply get none. Doing that by hand
+    costs a pin dump, a second lookup for the test points' nets, and a manual
+    cross-reference; the net list already pairs them, so this reads it once and
+    places in one go.
+
+    Pairing is by NET, never by designator arithmetic - test point numbering
+    does not run parallel to pin numbering.
+
+    Nets are skipped, and reported under needs_review, when the pairing is not
+    obvious: no test point on the net, more than one (a probe point elsewhere
+    on the same signal), or a rail whose pad list came back truncated.
+
+    Args:
+        connector (str): Connector designator, e.g. "J12"
+        dry_run (bool): True (default) returns the pairing without moving
+            anything. Set False to place.
+
+    Returns:
+        str: JSON with pairs (test point, pin, x, y), needs_review, and - when
+             placing - the result reported by Altium.
+    """
+    logger.info(f"Test points for {connector} (dry_run={dry_run})")
+
+    response = await altium_bridge.execute_command(
+        "get_net_connections", {"designators": [connector]})
+    if not response.get("success", False):
+        error_msg = response.get("error", "Unknown error")
+        return json.dumps({"success": False,
+                           "error": f"Failed to read nets of {connector}: {error_msg}"})
+
+    nets = (response.get("result", {}) or {}).get("nets", []) or []
+    pairs, review = [], []
+
+    for net in nets:
+        name = net.get("net", "")
+        pads = net.get("pads", []) or []
+
+        pin = next((p for p in pads if p.get("designator") == connector), None)
+        testpoints = [p for p in pads
+                      if str(p.get("designator", "")).upper().startswith("TP")]
+
+        if net.get("pads_truncated"):
+            if testpoints:
+                review.append({"net": name, "reason": "shared rail, pad list truncated"})
+            continue
+        if pin is None:
+            continue
+        if not testpoints:
+            continue
+        if len(testpoints) > 1:
+            review.append({"net": name,
+                           "reason": "more than one test point on this net",
+                           "candidates": [t["designator"] for t in testpoints]})
+            continue
+
+        pairs.append({"testpoint": testpoints[0]["designator"],
+                      "pin": pin.get("pin"),
+                      "x": pin.get("x"),
+                      "y": pin.get("y"),
+                      "net": name})
+
+    pairs.sort(key=lambda p: (str(p["pin"]).zfill(4)))
+    out = {"success": True, "connector": connector, "paired": len(pairs),
+           "pairs": pairs, "needs_review": review}
+
+    if dry_run or not pairs:
+        out["note"] = "dry run - nothing moved" if pairs else "nothing to place"
+        return json.dumps(out, indent=2)
+
+    entries = [f'{p["testpoint"]}|{float(p["x"])}|{float(p["y"])}|0.0|'
+               for p in pairs]
+    placed = await altium_bridge.execute_command(
+        "place_components", {"placements": entries})
+    if not placed.get("success", False):
+        out["success"] = False
+        out["error"] = placed.get("error", "Unknown error")
+        return json.dumps(out, indent=2)
+
+    out["placed"] = placed.get("result", {})
+    return json.dumps(out, indent=2)
+
+
 def _mst_length(points: list) -> float:
     """Minimum-spanning-tree length over (x, y) points (Prim's algorithm)."""
     n = len(points)

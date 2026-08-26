@@ -186,6 +186,7 @@ The server provides several tools to interact with Altium Designer:
 - `move_components`: Move specified components by X and Y offsets
 - `set_component_position`: Set one component's absolute position and rotation
 - `place_components`: Batch absolute placement - place any number of components (x, y, rotation, top/bottom layer) in a single transaction / one undo step. The workhorse for AI-driven placement.
+- `place_testpoints_on_connector`: Drop each of a connector's test points onto the pin carrying its net - the usual convention of a test point sitting at the pin's pad centre on the far side of the board, with grounds and spares left bare. Pairs by net, never by designator arithmetic, and reports rather than guesses when a net has no test point or more than one. Defaults to a dry run.
 - `check_placement`: Verify a placement - finds overlaps and clearance violations against every other component on the board using true primitive-to-primitive distances (designator text excluded). Run after placing; a screenshot is not verification.
 - `check_orientation`: Advisory check for 2-pad passives whose rotation could be improved (e.g. a decoupling cap with its GND pad facing away from the IC). Geometry only - review suggestions with judgement; parts like pull-ups don't care.
 - `get_net_connections`: For the nets touching a set of components, list every pad on each net board-wide with per-net airline (MST) lengths - the data behind connectivity-driven placement (shorten critical nets, see off-cluster loads and filter banks).
