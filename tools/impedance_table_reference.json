@@ -1,19 +1,16 @@
 {
-  "_comment": "The table on Safety Carrier Board_A0, as redrawn by hand. A 4-layer board, so four data rows named by the Layer column, nothing between them and nothing padding the bottom. Groups 2 and 3 are spares: their columns are drawn but carry no values.",
+  "_comment": "The table on Safety Carrier Board_A0. A 4-layer board carrying two controlled impedances - 100 ohm differential for Ethernet and 120 ohm for CAN - so two groups and four rows, named by the Layer column. Single-ended and spare groups were dropped: the table shows what the board actually controls, nothing else.",
   "origin_mm": [334.5142, 243.4419],
   "units_note": "mm",
   "label_column": {"width_mm": 22.0, "caption": "Layer"},
   "groups": [
-    {"kind": "Zs",    "ohm": "50"},
-    {"kind": "Zs",    "ohm": ""},
-    {"kind": "ZDiff", "ohm": ""},
     {"kind": "ZDiff", "ohm": "100"},
     {"kind": "ZDiff", "ohm": "120"}
   ],
   "rows": [
-    {"label": "Top Layer",     "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
-    {"label": "Inner Layer 1", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
-    {"label": "Inner Layer 2", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
-    {"label": "Bottom Layer",  "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]}
+    {"label": "Top Layer",     "cells": [["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
+    {"label": "Inner Layer 1", "cells": [["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
+    {"label": "Inner Layer 2", "cells": [["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
+    {"label": "Bottom Layer",  "cells": [["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]}
   ]
 }

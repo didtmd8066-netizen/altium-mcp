@@ -60,8 +60,9 @@ ADVANCE_BY_CHAR = dict(
     [(".", 0.40), (",", 0.40), ("-", 0.55), (" ", 0.45)]
     + [(c, 0.45) for c in "iljft"]
     + [(c, 0.95) for c in "mw"]
-    + [(c, 0.65) for c in "abcdeghknopqrsuvxyz"]
-    + [(c, 0.95) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
+    + [(c, 0.75) for c in "abcdeghknopqrsuvxyz"]
+    + [("I", 0.45)]
+    + [(c, 0.95) for c in "ABCDEFGHJKLMNOPQRSTUVWXYZ"]
 )
 
 # Column widths within a group. Both kinds come to a round total - 22 mm and
@@ -70,7 +71,16 @@ ADVANCE_BY_CHAR = dict(
 COLS_MM = {"Zs": [11.0, 11.0], "ZDiff": [11.5, 11.0, 10.5]}
 
 ROW_MM = 5.0            # every row, headings included
-NOTE_GAP_MM = 1.66      # units note above the top edge
+
+# The units note above the top-right corner is two strings, "-Units:" and the
+# unit itself, set at these distances in from the right edge.
+NOTE_GAP_MM = 1.66      # above the top edge
+NOTE_LABEL_INSET_MM = 24.27
+NOTE_VALUE_INSET_MM = 9.03
+
+# The layer names, and their caption, sit a touch higher in their band than
+# the figures do - consistently so on the board, in every row.
+LABEL_RISE_MM = 0.35
 
 
 def u(mm):
@@ -134,10 +144,10 @@ def build(recipe):
             "Obj3.Size := I3; Obj3.Width := B1; Obj3.Layer := I1; Obj1.AddPCBObject(Obj3);"
             % (u(x), u(y), s.replace("'", "''")))
 
-    def centred(s, col_lo, col_hi, band):
+    def centred(s, col_lo, col_hi, band, rise=0.0):
         """Centre s across columns [col_lo, col_hi) in band index `band`."""
         x = xs[col_lo] + ((xs[col_hi] - xs[col_lo]) - text_width(s)) / 2.0
-        y = ys[band + 1] + (ROW_MM - TEXT_H_MM) / 2.0
+        y = ys[band + 1] + (ROW_MM - TEXT_H_MM) / 2.0 + rise
         label(s, x, y)
 
     # Grid. Horizontals span the full width.
@@ -156,7 +166,8 @@ def build(recipe):
 
     # Heading band 2: the column captions, and the label column's own.
     if label_col:
-        centred(label_col.get("caption", "Layer"), label_idx, label_idx + 1, 1)
+        centred(label_col.get("caption", "Layer"), label_idx, label_idx + 1, 1,
+                LABEL_RISE_MM)
     for g, (lo, _) in zip(groups, spans):
         caps = ["W", "d", "Ohm"] if g["kind"] == "ZDiff" else ["W", "Ohm"]
         for n, cap in enumerate(caps):
@@ -165,14 +176,16 @@ def build(recipe):
     # Data bands: the layer name, then the figures.
     for r, row in enumerate(rows):
         if label_col:
-            centred(row.get("label", ""), label_idx, label_idx + 1, 2 + r)
+            centred(row.get("label", ""), label_idx, label_idx + 1, 2 + r,
+                    LABEL_RISE_MM)
         for (lo, _), cells in zip(spans, row.get("cells", []) or []):
             for n, cell in enumerate(cells):
                 centred(str(cell), lo + n, lo + n + 1, 2 + r)
 
-    # Units note, right-aligned just above the top edge.
-    note = "-Units: %s" % recipe.get("units_note", "mm")
-    label(note, xs[-1] - text_width(note), ys[0] + NOTE_GAP_MM)
+    # Units note, just above the top edge.
+    note_y = ys[0] + NOTE_GAP_MM
+    label("-Units:", xs[-1] - NOTE_LABEL_INSET_MM, note_y)
+    label(recipe.get("units_note", "mm"), xs[-1] - NOTE_VALUE_INSET_MM, note_y)
 
     add("PCBServer.PostProcess;")
     add("Obj1.ViewManager_FullUpdate;")
