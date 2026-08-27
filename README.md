@@ -18,6 +18,12 @@ This is a Model Context Protocol (MCP) server that provides an interface to inte
 - Place the selected parts on my pcb with best practices for a switching regulator, then verify clearances and show me a screenshot of the result
 - Give me a list of all IC designators in my design
 - Get me all length matching rules
+- Replicate the Q32 channel across all 10 channels, keeping the same relative offsets (map the designators with `tools/sheet_match.py` first, then one `layout_duplicator_apply` and one `move_components` - not one call per channel)
+- Drop a test point on every J12 pin that has one, matched by net rather than by numbering
+- Read the Advanced clearance matrix out of this .PcbDoc and tell me which object pairs override the base rule
+- Which connector pin does each of these MOSFET channels drive? Work it out from the netlist before placing anything
+- Draw the impedance table on Drill Drawing from this fabricator recipe, then check the figures against the differential pair rules
+- Try this DelphiScript in the sandbox and tell me which statement fails
 
 ## Installing the MCP Server
 The easiest way to install is to use Claude Code, point it to this repo and ask it to install it for you. Or alternatively, see below.
