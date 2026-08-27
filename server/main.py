@@ -1084,7 +1084,8 @@ async def get_component_pins(ctx: Context, cmp_designators: list) -> str:
     return json.dumps(pins_data, indent=2)
 
 SANDBOX_DIR = MCP_DIR / "SandboxScript"
-SANDBOX_PAS = SANDBOX_DIR / "Sandbox.pas"
+SANDBOX_PAS = SANDBOX_DIR / "Sandbox.pas"                 # regenerated each run
+SANDBOX_TEMPLATE = SANDBOX_DIR / "Sandbox.template.pas"  # pristine, tracked in git
 SANDBOX_PRJ = SANDBOX_DIR / "Sandbox.PrjScr"
 SANDBOX_LOG = EXCHANGE_DIR / "sandbox_log.txt"
 SANDBOX_RESULT = EXCHANGE_DIR / "sandbox_result.json"
@@ -1174,12 +1175,12 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
     """
     logger.info(f"run_altium_script: {len(script.splitlines())} lines")
 
-    if not SANDBOX_PAS.exists() or not SANDBOX_PRJ.exists():
+    if not SANDBOX_TEMPLATE.exists() or not SANDBOX_PRJ.exists():
         return json.dumps({"success": False,
                            "error": f"sandbox project missing at {SANDBOX_DIR}"})
 
     try:
-        src = SANDBOX_PAS.read_text(encoding="utf-8")
+        src = SANDBOX_TEMPLATE.read_text(encoding="utf-8")
         pre, rest = src.split(SANDBOX_BEGIN, 1)
         marker_line, rest = rest.split("\n", 1)
         _, post = rest.split(SANDBOX_END, 1)

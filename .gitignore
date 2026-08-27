@@ -16,3 +16,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Rewritten by run_altium_script on every call; source is Sandbox.template.pas
+server/SandboxScript/Sandbox.pas
