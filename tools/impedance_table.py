@@ -12,30 +12,33 @@ on Drill Drawing. This builds that same table from a recipe instead.
 The output is a DelphiScript body for the run_altium_script MCP tool. It only
 ADDS objects; clear an old table by selecting and deleting it first.
 
-Geometry below is measured off the table on Safety Carrier Board_A0 after it
-was tidied up: every column 11 mm, every row 5 mm, the heading a single Zs or
-ZDiff string rather than a Z with a separate subscript glyph.
+The leftmost column names the layer each row belongs to. It is not optional in
+practice: without it the rows carry impedance figures that nobody can tie to a
+layer, which is exactly how the first generated version came out and why it
+had to be redrawn by hand.
+
+Geometry is measured off the table on Safety Carrier Board_A0.
 
 Recipe format
 -------------
 {
   "origin_mm": [334.5142, 241.4419],    # lower-left corner of the grid
   "units_note": "mm",                   # printed above the top-right corner
+  "label_column": {"width_mm": 22.0, "caption": "Layer"},
   "groups": [                           # left to right
     {"kind": "Zs",    "ohm": "50"},     # -> columns W | Ohm
     {"kind": "ZDiff", "ohm": "100"}     # -> columns W | d | Ohm
   ],
-  "rows": [                             # TOP row first
-    {"cells": [["0.113", "50"], ["0.13", "0.185", "100"]]},
-    {"cells": []},                      # blank band (dielectric)
-    {"cells": [["0.128", "50"], ["0.102", "0.203", "100"]]}
+  "rows": [                             # TOP row first, one per signal layer
+    {"label": "Top Layer",    "cells": [["0.113", "50"], ["0.13", "0.185", "100"]]},
+    {"label": "Bottom Layer", "cells": [["0.113", "50"], ["0.13", "0.185", "100"]]}
   ]
 }
 
-A group with "ohm": "" still draws its columns but carries no values - that is
-how the spare groups on the reference table are left. Every row in "rows"
-becomes one 5 mm band, blank ones included, so the band that pads the bottom
-of the table is just a trailing entry with no cells.
+Give one row per signal layer and no more: a 4-layer board gets four rows,
+with no spacer bands between them and none padding the bottom. A group with
+"ohm": "" still draws its columns but carries no values - that is how the
+spare groups on the reference table are left.
 """
 import json
 import sys
@@ -51,8 +54,7 @@ TEXT_W_MM = 0.4         # stroke width
 
 # Altium's stroke font is proportional. These advances, as a fraction of the
 # glyph height, are fitted to strings measured off the board; they leave
-# centring within about 0.4 mm in an 11 mm column. Chasing closer is pointless
-# - the hand-placed strings scatter by that much between identical cells.
+# centring within about 0.4 mm in an 11 mm column, which reads as centred.
 ADVANCE = 0.80          # digits, and anything not listed below
 ADVANCE_BY_CHAR = dict(
     [(".", 0.40), (",", 0.40), ("-", 0.55), (" ", 0.45)]
@@ -79,23 +81,27 @@ def text_width(s):
     return sum(ADVANCE_BY_CHAR.get(c, ADVANCE) for c in s) * TEXT_H_MM
 
 
-def columns(groups):
-    """Every column width left to right, and each group's half-open range."""
+def columns(recipe):
+    """Every column width left to right, each group's range, and the label
+    column's index if the recipe asks for one."""
     widths, spans = [], []
-    for g in groups:
+    label = recipe.get("label_column")
+    if label:
+        widths.append(label["width_mm"])
+    for g in recipe["groups"]:
         start = len(widths)
         widths.extend(COLS_MM[g["kind"]])
         spans.append((start, len(widths)))
-    return widths, spans
+    return widths, spans, (0 if label else None)
 
 
 def build(recipe):
     ox, oy = recipe["origin_mm"]
     groups = recipe["groups"]
     rows = recipe["rows"]
+    label_col = recipe.get("label_column")
 
-    widths, spans = columns(groups)
-    ncols = len(widths)
+    widths, spans, label_idx = columns(recipe)
     xs = [ox]
     for w in widths:
         xs.append(xs[-1] + w)
@@ -138,23 +144,28 @@ def build(recipe):
     for y in ys:
         track(xs[0], y, xs[-1], y)
     # Verticals: the outer edges and the group boundaries run the full height;
-    # the separators inside a group stop below the Zs/ZDiff heading band.
-    boundaries = {0, ncols} | {lo for lo, _ in spans} | {hi for _, hi in spans}
+    # the separators inside a group stop below the Zs/ZDiff heading band. The
+    # label column has no separator of its own - it is one cell wide.
+    boundaries = {0, len(widths)} | {lo for lo, _ in spans} | {hi for _, hi in spans}
     for i, x in enumerate(xs):
         track(x, ys[0], x, ys[-1] if i in boundaries else ys[1])
 
-    # Heading band 1: one string per group.
+    # Heading band 1: one string per group. The label column stays empty.
     for g, (lo, hi) in zip(groups, spans):
         centred(g["kind"], lo, hi, 0)
 
-    # Heading band 2: the column captions.
+    # Heading band 2: the column captions, and the label column's own.
+    if label_col:
+        centred(label_col.get("caption", "Layer"), label_idx, label_idx + 1, 1)
     for g, (lo, _) in zip(groups, spans):
         caps = ["W", "d", "Ohm"] if g["kind"] == "ZDiff" else ["W", "Ohm"]
         for n, cap in enumerate(caps):
             centred(cap, lo + n, lo + n + 1, 1)
 
-    # Data bands.
+    # Data bands: the layer name, then the figures.
     for r, row in enumerate(rows):
+        if label_col:
+            centred(row.get("label", ""), label_idx, label_idx + 1, 2 + r)
         for (lo, _), cells in zip(spans, row.get("cells", []) or []):
             for n, cell in enumerate(cells):
                 centred(str(cell), lo + n, lo + n + 1, 2 + r)

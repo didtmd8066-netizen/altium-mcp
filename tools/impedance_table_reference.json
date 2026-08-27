@@ -1,7 +1,8 @@
 {
-  "_comment": "The table on Safety Carrier Board_A0 - a 4-layer board, so four data rows and no dielectric spacers between them. Groups 2 and 3 are spares: their columns are drawn but carry no values. Rows run top-first; the trailing blank pads the bottom of the grid.",
-  "origin_mm": [334.5142, 241.4419],
+  "_comment": "The table on Safety Carrier Board_A0, as redrawn by hand. A 4-layer board, so four data rows named by the Layer column, nothing between them and nothing padding the bottom. Groups 2 and 3 are spares: their columns are drawn but carry no values.",
+  "origin_mm": [334.5142, 243.4419],
   "units_note": "mm",
+  "label_column": {"width_mm": 22.0, "caption": "Layer"},
   "groups": [
     {"kind": "Zs",    "ohm": "50"},
     {"kind": "Zs",    "ohm": ""},
@@ -10,10 +11,9 @@
     {"kind": "ZDiff", "ohm": "120"}
   ],
   "rows": [
-    {"_layer": "Top Layer",     "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
-    {"_layer": "Inner Layer 1", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
-    {"_layer": "Inner Layer 2", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
-    {"_layer": "Bottom Layer",  "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
-    {"_layer": "",              "cells": []}
+    {"label": "Top Layer",     "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
+    {"label": "Inner Layer 1", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
+    {"label": "Inner Layer 2", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
+    {"label": "Bottom Layer",  "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]}
   ]
 }
