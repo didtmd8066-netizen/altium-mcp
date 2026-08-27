@@ -12,15 +12,14 @@ on Drill Drawing. This builds that same table from a recipe instead.
 The output is a DelphiScript body for the run_altium_script MCP tool. It only
 ADDS objects; clear an old table by selecting and deleting it first.
 
-Geometry below was measured off the table on Safety Carrier Board_A0 so a
-generated table sits beside a hand-drawn one without looking different. Text
-placement is the one deliberate departure: the hand-placed strings sit at
-offsets between 0.98 and 2.77 mm inside their cells, and this centres them.
+Geometry below is measured off the table on Safety Carrier Board_A0 after it
+was tidied up: every column 11 mm, every row 5 mm, the heading a single Zs or
+ZDiff string rather than a Z with a separate subscript glyph.
 
 Recipe format
 -------------
 {
-  "origin_mm": [334.799, 241.322],      # lower-left corner of the grid
+  "origin_mm": [334.5142, 241.4419],    # lower-left corner of the grid
   "units_note": "mm",                   # printed above the top-right corner
   "groups": [                           # left to right
     {"kind": "Zs",    "ohm": "50"},     # -> columns W | Ohm
@@ -33,8 +32,10 @@ Recipe format
   ]
 }
 
-A group with "ohm": "" still draws its columns but prints no heading value -
-that is how the spare columns on the reference table were left.
+A group with "ohm": "" still draws its columns but carries no values - that is
+how the spare groups on the reference table are left. Every row in "rows"
+becomes one 5 mm band, blank ones included, so the band that pads the bottom
+of the table is just a trailing entry with no cells.
 """
 import json
 import sys
@@ -47,16 +48,27 @@ LAYER = "Drill Drawing"
 LINE_W_MM = 0.2032      # 8 mil, the grid lines
 TEXT_H_MM = 2.1         # glyph height
 TEXT_W_MM = 0.4         # stroke width
-ADVANCE = 0.6           # stroke-font advance per char, as a fraction of height
 
-COL_VALUE_MM = 12.7     # W and d columns
-COL_UNIT_MM = 8.89      # the Ohm column
-ROW_HEAD1_MM = 5.715    # Zs / ZDiff band
-ROW_HEAD2_MM = 4.445    # W / d / Ohm band
-ROW_DATA_MM = 5.08
-ROW_FOOT_MM = 8.06      # taller empty band along the bottom
+# Altium's stroke font is proportional. These advances, as a fraction of the
+# glyph height, are fitted to strings measured off the board; they leave
+# centring within about 0.4 mm in an 11 mm column. Chasing closer is pointless
+# - the hand-placed strings scatter by that much between identical cells.
+ADVANCE = 0.80          # digits, and anything not listed below
+ADVANCE_BY_CHAR = dict(
+    [(".", 0.40), (",", 0.40), ("-", 0.55), (" ", 0.45)]
+    + [(c, 0.45) for c in "iljft"]
+    + [(c, 0.95) for c in "mw"]
+    + [(c, 0.65) for c in "abcdeghknopqrsuvxyz"]
+    + [(c, 0.95) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
+)
 
-SUB_DROP_MM = 0.127     # how far the s/Diff subscript sits below the Z
+# Column widths within a group. Both kinds come to a round total - 22 mm and
+# 33 mm - so group boundaries land on the same grid either way; the uneven
+# split of a ZDiff group buys width for the W column, whose values run longest.
+COLS_MM = {"Zs": [11.0, 11.0], "ZDiff": [11.5, 11.0, 10.5]}
+
+ROW_MM = 5.0            # every row, headings included
+NOTE_GAP_MM = 1.66      # units note above the top edge
 
 
 def u(mm):
@@ -64,18 +76,15 @@ def u(mm):
 
 
 def text_width(s):
-    return len(s) * TEXT_H_MM * ADVANCE
+    return sum(ADVANCE_BY_CHAR.get(c, ADVANCE) for c in s) * TEXT_H_MM
 
 
 def columns(groups):
-    """Widths of every column, left to right, plus each group's column span."""
+    """Every column width left to right, and each group's half-open range."""
     widths, spans = [], []
     for g in groups:
         start = len(widths)
-        widths.append(COL_VALUE_MM)                    # W
-        if g["kind"] == "ZDiff":
-            widths.append(COL_VALUE_MM)                # d
-        widths.append(COL_UNIT_MM)                     # Ohm
+        widths.extend(COLS_MM[g["kind"]])
         spans.append((start, len(widths)))
     return widths, spans
 
@@ -86,16 +95,14 @@ def build(recipe):
     rows = recipe["rows"]
 
     widths, spans = columns(groups)
+    ncols = len(widths)
     xs = [ox]
     for w in widths:
         xs.append(xs[-1] + w)
 
-    # Rows are given top-first; lay them out downward from the top edge.
-    heights = [ROW_HEAD1_MM, ROW_HEAD2_MM] + [ROW_DATA_MM] * len(rows) + [ROW_FOOT_MM]
-    total_h = sum(heights)
-    ys = [oy + total_h]
-    for h in heights:
-        ys.append(ys[-1] - h)
+    # Two heading bands, then one band per row. Rows are given top-first.
+    nbands = 2 + len(rows)
+    ys = [oy + (nbands - i) * ROW_MM for i in range(nbands + 1)]
 
     out = []
     add = out.append
@@ -120,48 +127,40 @@ def build(recipe):
         add("Obj3.Layer := String2Layer('%s');" % LAYER)
         add("Obj1.AddPCBObject(Obj3);")
 
-    def centred(s, col_lo, col_hi, row_top, row_bot):
-        """Place s centred across columns [col_lo, col_hi) in one row band."""
+    def centred(s, col_lo, col_hi, band):
+        """Centre s across columns [col_lo, col_hi) in band index `band`."""
         x = xs[col_lo] + ((xs[col_hi] - xs[col_lo]) - text_width(s)) / 2.0
-        y = row_bot + ((row_top - row_bot) - TEXT_H_MM) / 2.0
+        y = ys[band + 1] + (ROW_MM - TEXT_H_MM) / 2.0
         label(s, x, y)
-        return x, y
 
-    # Grid: every horizontal line spans the full width.
+    # Grid. Horizontals span the full width.
     for y in ys:
         track(xs[0], y, xs[-1], y)
-    # Verticals stop at the foot band, except the two outer edges and the
-    # group boundaries, which run the whole height - as on the reference table.
-    foot_top = ys[-2]
-    boundaries = {0, len(widths)} | {s for s, _ in spans} | {e for _, e in spans}
+    # Verticals: the outer edges and the group boundaries run the full height;
+    # the separators inside a group stop below the Zs/ZDiff heading band.
+    boundaries = {0, ncols} | {lo for lo, _ in spans} | {hi for _, hi in spans}
     for i, x in enumerate(xs):
-        track(x, ys[0], x, ys[0] - total_h if i in boundaries else foot_top)
+        track(x, ys[0], x, ys[-1] if i in boundaries else ys[1])
 
-    # Heading line 1: Z with a subscript, centred over each group.
+    # Heading band 1: one string per group.
     for g, (lo, hi) in zip(groups, spans):
-        sub = "s" if g["kind"] == "Zs" else "Diff"
-        whole = "Z" + sub
-        x = xs[lo] + ((xs[hi] - xs[lo]) - text_width(whole)) / 2.0
-        y = ys[1] + ((ys[0] - ys[1]) - TEXT_H_MM) / 2.0
-        label("Z", x, y)
-        label(sub, x + text_width("Z") + 0.15, y - SUB_DROP_MM)
+        centred(g["kind"], lo, hi, 0)
 
-    # Heading line 2: the column captions.
-    for g, (lo, hi) in zip(groups, spans):
+    # Heading band 2: the column captions.
+    for g, (lo, _) in zip(groups, spans):
         caps = ["W", "d", "Ohm"] if g["kind"] == "ZDiff" else ["W", "Ohm"]
         for n, cap in enumerate(caps):
-            centred(cap, lo + n, lo + n + 1, ys[1], ys[2])
+            centred(cap, lo + n, lo + n + 1, 1)
 
-    # Data rows.
+    # Data bands.
     for r, row in enumerate(rows):
-        top, bot = ys[2 + r], ys[3 + r]
-        for g, (lo, _), cells in zip(groups, spans, row.get("cells", []) or []):
+        for (lo, _), cells in zip(spans, row.get("cells", []) or []):
             for n, cell in enumerate(cells):
-                centred(str(cell), lo + n, lo + n + 1, top, bot)
+                centred(str(cell), lo + n, lo + n + 1, 2 + r)
 
-    # The units note sits just above the top-right corner.
+    # Units note, right-aligned just above the top edge.
     note = "-Units: %s" % recipe.get("units_note", "mm")
-    label(note, xs[-1] - text_width(note), ys[0] + 1.4)
+    label(note, xs[-1] - text_width(note), ys[0] + NOTE_GAP_MM)
 
     add("PCBServer.PostProcess;")
     add("Obj1.ViewManager_FullUpdate;")
