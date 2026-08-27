@@ -109,23 +109,24 @@ def build(recipe):
     add("SandboxLog('impedance table: start');")
     add("Obj1 := PCBServer.GetCurrentPCBBoard;")
     add("PCBServer.PreProcess;")
+    # Hoist the constants: one object per emitted line keeps the script small
+    # enough to hand to run_altium_script without it dominating the request.
+    add("I1 := String2Layer('%s');" % LAYER)
+    add("I2 := %d; I3 := %d; B1 := %d;" % (u(LINE_W_MM), u(TEXT_H_MM), u(TEXT_W_MM)))
 
     def track(x1, y1, x2, y2):
-        add("Obj2 := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default);")
-        add("Obj2.X1 := %d; Obj2.Y1 := %d; Obj2.X2 := %d; Obj2.Y2 := %d;"
+        add("Obj2 := PCBServer.PCBObjectFactory(eTrackObject, eNoDimension, eCreate_Default); "
+            "Obj2.X1 := %d; Obj2.Y1 := %d; Obj2.X2 := %d; Obj2.Y2 := %d; "
+            "Obj2.Width := I2; Obj2.Layer := I1; Obj1.AddPCBObject(Obj2);"
             % (u(x1), u(y1), u(x2), u(y2)))
-        add("Obj2.Width := %d; Obj2.Layer := String2Layer('%s');" % (u(LINE_W_MM), LAYER))
-        add("Obj1.AddPCBObject(Obj2);")
 
     def label(s, x, y):
         if s == "":
             return
-        add("Obj3 := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default);")
-        add("Obj3.XLocation := %d; Obj3.YLocation := %d;" % (u(x), u(y)))
-        add("Obj3.Text := '%s';" % s.replace("'", "''"))
-        add("Obj3.Size := %d; Obj3.Width := %d;" % (u(TEXT_H_MM), u(TEXT_W_MM)))
-        add("Obj3.Layer := String2Layer('%s');" % LAYER)
-        add("Obj1.AddPCBObject(Obj3);")
+        add("Obj3 := PCBServer.PCBObjectFactory(eTextObject, eNoDimension, eCreate_Default); "
+            "Obj3.XLocation := %d; Obj3.YLocation := %d; Obj3.Text := '%s'; "
+            "Obj3.Size := I3; Obj3.Width := B1; Obj3.Layer := I1; Obj1.AddPCBObject(Obj3);"
+            % (u(x), u(y), s.replace("'", "''")))
 
     def centred(s, col_lo, col_hi, band):
         """Centre s across columns [col_lo, col_hi) in band index `band`."""

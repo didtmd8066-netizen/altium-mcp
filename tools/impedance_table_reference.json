@@ -1,5 +1,5 @@
 {
-  "_comment": "The table as it stands on Safety Carrier Board_A0 after tidying - the format all other boards follow. Groups 2 and 3 are spares: their columns are drawn but carry no values. Rows run top-first; the blank ones are the dielectric bands between signal layers, and the trailing blank pads the bottom of the grid.",
+  "_comment": "The table on Safety Carrier Board_A0 - a 4-layer board, so four data rows and no dielectric spacers between them. Groups 2 and 3 are spares: their columns are drawn but carry no values. Rows run top-first; the trailing blank pads the bottom of the grid.",
   "origin_mm": [334.5142, 241.4419],
   "units_note": "mm",
   "groups": [
@@ -11,10 +11,8 @@
   ],
   "rows": [
     {"_layer": "Top Layer",     "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
-    {"_layer": "",              "cells": []},
     {"_layer": "Inner Layer 1", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
     {"_layer": "Inner Layer 2", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
-    {"_layer": "",              "cells": []},
     {"_layer": "Bottom Layer",  "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
     {"_layer": "",              "cells": []}
   ]
