@@ -213,6 +213,26 @@ The cool thing about layout duplication this way as opposed to with Altium's bui
 ### Server Status
 - `get_server_status`: Check the status of the MCP server, including paths to Altium and script files
 
+## Offline Helpers (`tools/`)
+
+Not MCP tools - plain scripts that run against files on disk, with Altium closed. Both exist because the work they do is cheaper and safer outside the bridge: no UI thread to block, no script executor to wedge, and a mistake costs nothing until you choose to apply the result.
+
+- `sheet_match.py`: Pair up components between two schematic sheets drawn from the same circuit, and print the `source_designators` / `destination_designators` lists that `layout_duplicator_apply` takes. Matching runs in stages - exact coordinates, then nearest neighbour of the same part type, then ambiguous - and labels each pair with the stage that produced it, because the later stages are weaker evidence. Lets a repeated block be replicated in one bridge call instead of one per channel.
+
+  ```
+  python tools/sheet_match.py <source.SchDoc> <dest.SchDoc> --skip TP
+  ```
+
+  Resolve anything it marks ambiguous by netlist, never by designator arithmetic: sheet numbering offsets are not constant, and identical passives cannot be told apart by value.
+
+- `impedance_table.py`: Draw the impedance table that fabricators read off the board drawing - grid lines as tracks, values as strings, on Drill Drawing. Altium has no equivalent that lives inside a `.PcbDoc`: the PCB editor's Layer Stack Table carries layers, materials, thickness and Er but no impedance, and Draftsman's Transmission Line Table is a separate document. Takes a JSON recipe (see `impedance_table_reference.json`) and emits a DelphiScript body for `run_altium_script`.
+
+  ```
+  python tools/impedance_table.py recipe.json > table.pas
+  ```
+
+  It only adds objects, so clear an old table by selecting and deleting it first. Give one row per signal layer, name each one in the label column, and list only the impedances the board actually controls.
+
 ## How It Works
 
 The server communicates with Altium Designer using a scripting bridge:
