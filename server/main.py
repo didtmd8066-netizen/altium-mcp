@@ -1958,20 +1958,27 @@ async def place_testpoints_on_connector(ctx: Context, connector: str,
         return json.dumps({"success": False,
                            "error": f"Failed to read nets of {connector}: {error_msg}"})
 
-    nets = (response.get("result", {}) or {}).get("nets", []) or []
+    result = response.get("result", {})
+    if isinstance(result, str):
+        result = json.loads(result)
+
+    # The bridge hands back a flat pad list, not nets - group it here.
+    by_net = {}
+    for pad in result.get("pads", []) or []:
+        by_net.setdefault(pad.get("net", ""), []).append(pad)
+
+    RAIL_PADS = 40   # above this a net is a rail (GND, supplies), not a signal
     pairs, review = [], []
 
-    for net in nets:
-        name = net.get("net", "")
-        pads = net.get("pads", []) or []
-
+    for name, pads in by_net.items():
         pin = next((p for p in pads if p.get("designator") == connector), None)
         testpoints = [p for p in pads
                       if str(p.get("designator", "")).upper().startswith("TP")]
 
-        if net.get("pads_truncated"):
+        if len(pads) > RAIL_PADS:
             if testpoints:
-                review.append({"net": name, "reason": "shared rail, pad list truncated"})
+                review.append({"net": name,
+                               "reason": "rail with %d pads, not paired" % len(pads)})
             continue
         if pin is None:
             continue
