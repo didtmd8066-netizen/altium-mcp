@@ -1,0 +1,20 @@
+{
+  "_comment": "The table as it stands on Safety Carrier Board_A0 - the format all other boards follow. Groups 2 and 3 are spares: their columns are drawn but left blank. Rows run top-first; the empty ones are the dielectric bands between signal layers.",
+  "origin_mm": [334.799, 241.322],
+  "units_note": "mm",
+  "groups": [
+    {"kind": "Zs",    "ohm": "50"},
+    {"kind": "Zs",    "ohm": ""},
+    {"kind": "ZDiff", "ohm": ""},
+    {"kind": "ZDiff", "ohm": "100"},
+    {"kind": "ZDiff", "ohm": "120"}
+  ],
+  "rows": [
+    {"_layer": "Top Layer",    "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]},
+    {"_layer": "",             "cells": []},
+    {"_layer": "Inner Layer 1", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
+    {"_layer": "Inner Layer 2", "cells": [["0.128", "50"], [], [], ["0.102", "0.203", "100"], ["0.083", "0.167", "120"]]},
+    {"_layer": "",             "cells": []},
+    {"_layer": "Bottom Layer", "cells": [["0.113", "50"], [], [], ["0.13", "0.185", "100"], ["0.083", "0.167", "120"]]}
+  ]
+}
