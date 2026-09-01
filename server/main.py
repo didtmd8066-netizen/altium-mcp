@@ -1968,7 +1968,11 @@ async def place_testpoints_on_connector(ctx: Context, connector: str,
     for pad in result.get("pads", []) or []:
         by_net.setdefault(pad.get("net", ""), []).append(pad)
 
-    RAIL_PADS = 40   # above this a net is a rail (GND, supplies), not a signal
+    # Above this a net is a rail (GND, supplies) rather than a signal worth
+    # probing. The gap is wide in practice - on Safety Carrier Board_A0, J12's
+    # signal nets carry a handful of pads each while GND carries 498 - so the
+    # exact threshold is not delicate.
+    RAIL_PADS = 40
     pairs, review = [], []
 
     for name, pads in by_net.items():
