@@ -221,7 +221,31 @@ The cool thing about layout duplication this way as opposed to with Altium's bui
 
 ## Offline Helpers (`tools/`)
 
-Not MCP tools - plain scripts that run against files on disk, with Altium closed. Both exist because the work they do is cheaper and safer outside the bridge: no UI thread to block, no script executor to wedge, and a mistake costs nothing until you choose to apply the result.
+Not MCP tools - plain scripts that run against files on disk, with Altium closed. They exist because the work they do is cheaper and safer outside the bridge: no UI thread to block, no script executor to wedge, no dependence on which document Altium happens to be focused on, and a mistake costs nothing until you choose to apply the result.
+
+- `parse_pcbdoc.py`: Read a `.PcbDoc` directly - stackup, components and their footprints, design rules, net/component/differential-pair classes, differential pairs. The board does not have to be open.
+
+  ```
+  python tools/parse_pcbdoc.py <board.PcbDoc> summary
+  python tools/parse_pcbdoc.py <board.PcbDoc> rules DiffPairsRouting
+  ```
+
+  Records inside the file are pipe-delimited text separated by NUL bytes. Split on NUL *before* pulling fields - a regex run over the whole file lets one record's values bleed into the next. Dimensions come out in mm; copper thickness also carries oz.
+
+- `trace_width.py`: Width a current needs, per IPC-2221, using the copper thickness read from that board's own stackup. Always answers for outer and inner layers together, since the two differ by roughly three times and quoting one invites a wrong assumption about the other. `--width` runs it backwards: what a given trace carries.
+
+  ```
+  python tools/trace_width.py <board.PcbDoc> 5A,3A,2A --dt 10
+  ```
+
+- `footprint_sheet.py`: Review and repair a `PCB Footprint 현황` workbook. `check --pcbdoc` compares it against the board's actual placement, which is the authority - the spreadsheet and the PCB each turn out to be wrong sometimes, and only the part's Value settles which. `formula --apply` replaces Sheet2's lookup with one keyed on designator instead of Value, including a fallback for multi-part symbols (`U5A` resolving to Sheet1's `U5`).
+
+  ```
+  python tools/footprint_sheet.py <sheet.xlsx> check --pcbdoc <board.PcbDoc>
+  python tools/footprint_sheet.py <sheet.xlsx> diff <previous.xlsx>
+  ```
+
+  A Value-keyed VLOOKUP returns the first matching row, so parts that share a Value but not a package come out wrong and stay quiet about it - one `0R/1%` group put 39 resistors on an inductor land pattern.
 
 - `sheet_match.py`: Pair up components between two schematic sheets drawn from the same circuit, and print the `source_designators` / `destination_designators` lists that `layout_duplicator_apply` takes. Matching runs in stages - exact coordinates, then nearest neighbour of the same part type, then ambiguous - and labels each pair with the stage that produced it, because the later stages are weaker evidence. Lets a repeated block be replicated in one bridge call instead of one per channel.
 
