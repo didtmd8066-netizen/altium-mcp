@@ -17,6 +17,8 @@ var
     OutPath  : String;
     // Scratch variables: DelphiScript has no inline declarations, so scripts
     // passed to the tool reuse these rather than declaring their own.
+    // List1 is CREATED before the script body runs - it used to be declared
+    // only, so the first `List1.Add(...)` died on a nil reference.
     S1, S2, S3 : String;
     I1, I2, I3 : Integer;
     B1         : Integer;
@@ -39,6 +41,7 @@ begin
     LogPath := 'C:\Users\Public\altium_mcp\sandbox_log.txt';
     OutPath := 'C:\Users\Public\altium_mcp\sandbox_result.json';
     LogLines := TStringList.Create;
+    List1 := TStringList.Create;
     ResultText := '{"sandbox": "no result set"}';
     SandboxLog('sandbox start');
 
@@ -52,6 +55,9 @@ begin
     end;
 
     SandboxLog('sandbox end');
+
+    if (List1 <> Nil) then
+        List1.Free;
 
     OutLines := TStringList.Create;
     try

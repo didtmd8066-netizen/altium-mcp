@@ -18,6 +18,7 @@ import win32api
 from PIL import Image
 import io
 import base64
+import uuid
 import glob
 import re
 
@@ -1091,6 +1092,9 @@ SANDBOX_LOG = EXCHANGE_DIR / "sandbox_log.txt"
 SANDBOX_RESULT = EXCHANGE_DIR / "sandbox_result.json"
 SANDBOX_BEGIN = "// === BEGIN EXPERIMENT"
 SANDBOX_END = "// === END EXPERIMENT"
+# Stamped into every sandbox run so a call can tell its own output from
+# output an earlier, queued run left behind.
+SANDBOX_RUN_TAG = "##run:"
 
 
 def _dismiss_altium_dialogs():
@@ -1222,7 +1226,10 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
     - Assign findings to the string variable ResultText - it is returned.
     - DelphiScript has NO inline variable declarations. Reuse the provided
       scratch variables: S1..S3 (String), I1..I3 and B1 (Integer),
-      Obj1..Obj5 (IDispatch), List1 (TStringList), IntMan, DbDoc.
+      Obj1..Obj5 (IDispatch), List1 (TStringList, already created - do not
+      Create or Free it), IntMan, DbDoc.
+    - To hand back more than a line or two, fill List1 and SaveToFile to a
+      path the caller can read; ResultText is for short answers.
     - try/except does NOT catch runtime errors such as bad conversions or
       invalid API calls, so it cannot be relied on to keep a script alive.
     - The sandbox is standalone: helpers and constants from the production
@@ -1250,6 +1257,8 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
         return json.dumps({"success": False,
                            "error": f"sandbox project missing at {SANDBOX_DIR}"})
 
+    nonce = uuid.uuid4().hex[:8]
+
     try:
         src = SANDBOX_TEMPLATE.read_text(encoding="utf-8")
         pre, rest = src.split(SANDBOX_BEGIN, 1)
@@ -1257,14 +1266,27 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
         _, post = rest.split(SANDBOX_END, 1)
         body = "\n".join("        " + ln if ln.strip() else ln
                           for ln in script.strip("\n").splitlines())
+        # Altium queues RunScript requests it cannot serve while an earlier
+        # script sits paused in the debugger, then replays them in order. A
+        # later call then finds the PREVIOUS call's log and result waiting for
+        # it and reports them as its own - that is how a whole session drifts
+        # one call behind. Stamp each run so its own output is identifiable.
+        body = "        SandboxLog('" + SANDBOX_RUN_TAG + nonce + "');" + chr(10) + body
         SANDBOX_PAS.write_text(
             pre + SANDBOX_BEGIN + marker_line + "\n" + body + "\n        " + SANDBOX_END + post,
             encoding="utf-8")
     except Exception as e:
         return json.dumps({"success": False, "error": f"could not inject script: {e}"})
 
-    async def launch():
-        """Run the sandbox once; return (steps, dialogs dismissed)."""
+    def _read_log():
+        if not SANDBOX_LOG.exists():
+            return []
+        return SANDBOX_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    def _is_ours(log):
+        return any(SANDBOX_RUN_TAG + nonce in line for line in log)
+
+    def _discard():
         for f in (SANDBOX_LOG, SANDBOX_RESULT):
             if f.exists():
                 try:
@@ -1272,36 +1294,52 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
                 except OSError:
                     pass
 
+    async def launch():
+        """Run the sandbox once.
+
+        Returns (steps, popups, result_text) where result_text is None if this
+        run never produced one. Output carrying a different run tag belongs to
+        an earlier queued run - it is discarded and we keep waiting, so a call
+        can never report someone else's log as its own.
+        """
+        _discard()
+
         cmd = (f'"{altium_bridge.config.altium_exe_path}" -RScriptingSystem:RunScript('
                f'ProjectName="{SANDBOX_PRJ}"^|ProcName="Sandbox>Run")')
         subprocess.Popen(cmd, shell=True)
 
         began = time.time()
         popups = 0
-        while not SANDBOX_RESULT.exists() and time.time() - began < timeout_seconds:
+        while time.time() - began < timeout_seconds:
+            if SANDBOX_RESULT.exists():
+                log = _read_log()
+                if _is_ours(log):
+                    text = SANDBOX_RESULT.read_text(encoding="utf-8", errors="replace").strip()
+                    return log, popups, text
+                # A queued earlier run just landed. Clear it and keep waiting
+                # for ours rather than handing it back.
+                logger.info("sandbox: discarding output from an earlier queued run")
+                _discard()
             await asyncio.sleep(0.5)
             if time.time() - began > 6:
                 popups += _dismiss_altium_dialogs()
 
-        log = []
-        if SANDBOX_LOG.exists():
-            log = SANDBOX_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
-        return log, popups
+        log = _read_log()
+        return (log if _is_ours(log) else []), popups, None
 
-    steps, dialogs = await launch()
+    steps, dialogs, result_text = await launch()
     cleared = False
 
-    # No log at all means the run never started - usually an EARLIER script is
-    # still parked in the debugger. Clear it and try once more, rather than
+    # Nothing of ours came back - usually an EARLIER script is still parked in
+    # the debugger, holding the queue. Clear it and try once more, rather than
     # handing back a failure the user has to fix by hand.
-    if not SANDBOX_RESULT.exists() and not steps:
+    if result_text is None and not steps:
         if _stop_paused_altium_script():
             cleared = True
-            steps, again = await launch()
+            steps, again, result_text = await launch()
             dialogs += again
 
-    if SANDBOX_RESULT.exists():
-        result_text = SANDBOX_RESULT.read_text(encoding="utf-8", errors="replace").strip()
+    if result_text is not None:
         out = {"success": True, "result": result_text, "steps": steps,
                "dialogs_dismissed": dialogs}
         if cleared:
@@ -2410,12 +2448,17 @@ async def check_placement(ctx: Context, cmp_designators: list = None, clearance_
     return json.dumps(result, indent=2)
 
 @mcp.tool()
-async def get_screenshot(ctx: Context, view_type: str = "pcb", zoom_to: list = None):
+async def get_screenshot(ctx: Context, view_type: str = "current", zoom_to: list = None):
     """
     Take a screenshot of the Altium window, returned as viewable image content.
 
     Args:
-        view_type (str): Type of view to capture - 'pcb' or 'sch'
+        view_type (str): 'current' (default) captures whatever the user has on
+            screen without touching it. 'pcb' or 'sch' switch Altium to that
+            document kind first - which STEALS the user's tab: if they were on
+            a Stackup, Draftsman or schematic tab, they lose it and have to
+            click back. Only pass those when the caller specifically needs that
+            document kind; to see what the user is looking at, use 'current'
         zoom_to (list, optional): List of component designators (e.g. ["U12", "R42"]).
             PCB view only: Altium zooms to the bounding box of these components
             (plus a margin) before the capture, so the components fill the frame.
@@ -2428,21 +2471,25 @@ async def get_screenshot(ctx: Context, view_type: str = "pcb", zoom_to: list = N
     logger.info(f"Taking screenshot of Altium {view_type} window (zoom_to={zoom_to})")
 
     try:
-        # First, execute the Altium command to ensure the right document type
-        # is focused, optionally zooming to the requested components
-        params = {"view_type": view_type.lower()}
-        if zoom_to:
-            params["designators"] = zoom_to
-        response = await altium_bridge.execute_command(
-            "take_view_screenshot",
-            params
-        )
-        
-        # Check for success
-        if not response.get("success", False):
-            error_msg = response.get("error", "Unknown error")
-            logger.error(f"Error focusing {view_type} document: {error_msg}")
-            return json.dumps({"success": False, "error": f"Failed to focus the correct document type: {error_msg}"})
+        # Switching documents steals the tab the user is working in, so only do
+        # it when the caller actually asked for a specific document kind (or
+        # needs a zoom, which is a PCB operation). The default just captures
+        # the window as it stands.
+        needs_focus = view_type.lower() != "current" or bool(zoom_to)
+        if needs_focus:
+            params = {"view_type": "pcb" if view_type.lower() == "current" else view_type.lower()}
+            if zoom_to:
+                params["designators"] = zoom_to
+            response = await altium_bridge.execute_command(
+                "take_view_screenshot",
+                params
+            )
+
+            # Check for success
+            if not response.get("success", False):
+                error_msg = response.get("error", "Unknown error")
+                logger.error(f"Error focusing {view_type} document: {error_msg}")
+                return json.dumps({"success": False, "error": f"Failed to focus the correct document type: {error_msg}"})
         
         # Run the screenshot capture in a separate thread
         import threading

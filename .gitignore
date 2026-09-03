@@ -22,3 +22,4 @@ server/SandboxScript/Sandbox.pas
 
 # Recipes under tools/ are source, not generated output
 !tools/*.json
+tools/pads.txt
