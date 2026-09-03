@@ -1129,6 +1129,77 @@ def _dismiss_altium_dialogs():
     return len(found)
 
 
+def _stop_paused_altium_script():
+    """Clear a script left paused in Altium's debugger, as Ctrl+F3 would.
+
+    A DelphiScript runtime error parks the script in the debugger with no
+    dialog, and every later run then returns the PREVIOUS run's log instead of
+    executing - a stale result that reads like a real one. Altium exposes no
+    process for this (ScriptingSystem:StopScript and friends do nothing), so
+    the only route is the keystroke.
+
+    SetForegroundWindow alone is refused: Windows will not let a background
+    process steal focus. Attaching to Altium's input thread first lifts that
+    restriction, which is the standard workaround. Focus does move to Altium
+    for a moment - unavoidable, and cheaper than asking the user every time.
+
+    Returns True if the keystroke went out.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return False
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+
+    hwnd = None
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, lparam):
+        if not user32.IsWindowVisible(h):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+        found.append((h, pid.value))
+        return True
+
+    user32.EnumWindows(cb, 0)
+    try:
+        import subprocess
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq X2.EXE", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10).stdout
+        altium_pids = {int(line.split('","')[1]) for line in out.splitlines() if '","' in line}
+    except Exception:
+        return False
+    for h, pid in found:
+        if pid in altium_pids:
+            hwnd = h
+            break
+    if not hwnd:
+        return False
+
+    target = user32.GetWindowThreadProcessId(hwnd, None)
+    current = kernel32.GetCurrentThreadId()
+    user32.AttachThreadInput(current, target, True)
+    try:
+        user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.4)
+        if user32.GetForegroundWindow() != hwnd:
+            return False
+        VK_CONTROL, VK_F3, KEYUP = 0x11, 0x72, 0x0002
+        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+        user32.keybd_event(VK_F3, 0, 0, 0)
+        user32.keybd_event(VK_F3, 0, KEYUP, 0)
+        user32.keybd_event(VK_CONTROL, 0, KEYUP, 0)
+        time.sleep(0.4)
+        return True
+    finally:
+        user32.AttachThreadInput(current, target, False)
+
+
 @mcp.tool()
 async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 120) -> str:
     """
@@ -1192,53 +1263,77 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
     except Exception as e:
         return json.dumps({"success": False, "error": f"could not inject script: {e}"})
 
-    for f in (SANDBOX_LOG, SANDBOX_RESULT):
-        if f.exists():
-            try:
-                f.unlink()
-            except OSError:
-                pass
+    async def launch():
+        """Run the sandbox once; return (steps, dialogs dismissed)."""
+        for f in (SANDBOX_LOG, SANDBOX_RESULT):
+            if f.exists():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
 
-    cmd = (f'"{altium_bridge.config.altium_exe_path}" -RScriptingSystem:RunScript('
-           f'ProjectName="{SANDBOX_PRJ}"^|ProcName="Sandbox>Run")')
-    subprocess.Popen(cmd, shell=True)
+        cmd = (f'"{altium_bridge.config.altium_exe_path}" -RScriptingSystem:RunScript('
+               f'ProjectName="{SANDBOX_PRJ}"^|ProcName="Sandbox>Run")')
+        subprocess.Popen(cmd, shell=True)
 
-    start = time.time()
-    dialogs = 0
-    while not SANDBOX_RESULT.exists() and time.time() - start < timeout_seconds:
-        await asyncio.sleep(0.5)
-        if time.time() - start > 6:
-            dialogs += _dismiss_altium_dialogs()
+        began = time.time()
+        popups = 0
+        while not SANDBOX_RESULT.exists() and time.time() - began < timeout_seconds:
+            await asyncio.sleep(0.5)
+            if time.time() - began > 6:
+                popups += _dismiss_altium_dialogs()
 
-    steps = []
-    if SANDBOX_LOG.exists():
-        steps = SANDBOX_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        log = []
+        if SANDBOX_LOG.exists():
+            log = SANDBOX_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+        return log, popups
+
+    steps, dialogs = await launch()
+    cleared = False
+
+    # No log at all means the run never started - usually an EARLIER script is
+    # still parked in the debugger. Clear it and try once more, rather than
+    # handing back a failure the user has to fix by hand.
+    if not SANDBOX_RESULT.exists() and not steps:
+        if _stop_paused_altium_script():
+            cleared = True
+            steps, again = await launch()
+            dialogs += again
 
     if SANDBOX_RESULT.exists():
         result_text = SANDBOX_RESULT.read_text(encoding="utf-8", errors="replace").strip()
-        return json.dumps({"success": True, "result": result_text, "steps": steps,
-                           "dialogs_dismissed": dialogs}, indent=2)
+        out = {"success": True, "result": result_text, "steps": steps,
+               "dialogs_dismissed": dialogs}
+        if cleared:
+            out["note"] = "a previously paused script was cleared before this run"
+        return json.dumps(out, indent=2)
 
     if steps:
+        # This script is what died. Clear it now so the next call is not stuck,
+        # but do not re-run it - it would park itself again on the same line.
+        stopped = _stop_paused_altium_script()
         return json.dumps({
             "success": False,
             "error": "script started but did not finish",
             "last_step_reached": steps[-1],
             "diagnosis": "The statement AFTER the last step is what crashed or paused the script.",
-            "executor_wedged": True,
-            "recovery": "Altium's script executor is now blocked: stop the paused script "
-                        "(script editor, Ctrl+F3) or restart Altium before running anything else.",
+            "executor_wedged": not stopped,
+            "recovery": ("The paused script was cleared automatically; fix the statement "
+                         "and run again." if stopped else
+                         "Could not clear it automatically - stop the paused script in "
+                         "Altium's script editor (Ctrl+F3) or restart Altium."),
             "steps": steps,
             "dialogs_dismissed": dialogs}, indent=2)
 
     return json.dumps({
         "success": False,
         "error": "script never started",
-        "diagnosis": "Usually a COMPILE error in the script, or a previously paused "
-                     "script blocking execution.",
-        "executor_wedged": True,
-        "recovery": "Check Altium's script editor for a paused line; stop it (Ctrl+F3) "
-                    "or restart Altium.",
+        "diagnosis": "Usually a COMPILE error in the script.",
+        "executor_wedged": not cleared,
+        "recovery": ("A paused script was cleared and the run retried, still nothing - "
+                     "check the script for a compile error." if cleared else
+                     "Check Altium's script editor for a paused line; stop it (Ctrl+F3) "
+                     "or restart Altium."),
         "dialogs_dismissed": dialogs}, indent=2)
 
 
