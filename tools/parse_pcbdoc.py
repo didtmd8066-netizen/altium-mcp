@@ -4,7 +4,9 @@
     python parse_pcbdoc.py <file.PcbDoc> <section> [filter]
 
     stackup      한 층씩 — 동박 두께(mm + oz), 유전체 재질/Er/두께, 총 두께
+    origin       사용자가 설정한 원점(보드 기준 좌표의 0,0)
     components   지정자 -> 풋프린트
+    positions    지정자 -> 좌표(보드 기준)·층·회전·풋프린트. filter 로 지정자 지정
     rules        설계 룰. filter 로 RULEKIND 지정 (예: DiffPairsRouting)
     classes      넷/부품/차동 클래스와 멤버
     diffpairs    차동 페어와 +/- 넷
@@ -24,6 +26,11 @@ CAN-120 룰에 없는 값이 있는 것처럼 읽힌 적이 있다.
 
 좌표·치수는 내부 단위(1/10000 mil)로 들어 있다. 여기서는 전부 mm 로 바꿔
 내보낸다. 동박 두께만 관례상 oz 를 함께 적는다.
+
+레코드의 X/Y 는 **시트 절대 원점** 기준이라 사용자가 Altium 화면에서 보는
+좌표와 다르다. `ORIGINX`/`ORIGINY` 가 사용자가 지정한 원점이므로 그걸 빼야
+보드 기준 좌표가 된다 - `positions` 는 그 환산을 마친 값을 준다. 90x140 보드에서
+x 가 224 로 나오는 것 같으면 환산을 빠뜨린 것이다.
 """
 import re
 import sys
@@ -116,6 +123,40 @@ def components(path):
     return out
 
 
+def origin(path):
+    """사용자가 Altium 에서 지정한 원점 (mm). 없으면 (0, 0)."""
+    for rec in records(path):
+        if 'ORIGINX' in rec and 'ORIGINY' in rec:
+            return _mm(rec['ORIGINX']), _mm(rec['ORIGINY'])
+    return 0.0, 0.0
+
+
+def positions(path, only=None):
+    """지정자 -> {x, y, layer, rotation, footprint}. 좌표는 **보드 기준** mm.
+
+    `only` 로 지정자 목록을 주면 그것만 돌려준다.
+    """
+    ox, oy = origin(path)
+    want = set(only) if only else None
+    out = {}
+    for rec in records(path):
+        des = (rec.get('SOURCEDESIGNATOR') or '').strip()
+        if not des or 'X' not in rec or 'PATTERN' not in rec:
+            continue
+        if want and des not in want:
+            continue
+        try:
+            rot = float(rec.get('ROTATION', 0) or 0)
+        except ValueError:
+            rot = 0.0
+        out[des] = {'x': _mm(rec['X']) - ox,
+                    'y': _mm(rec['Y']) - oy,
+                    'layer': rec.get('LAYER', ''),
+                    'rotation': rot,
+                    'footprint': (rec.get('PATTERN') or '').strip()}
+    return out
+
+
 def rules(path, kind=None):
     out = []
     for rec in records(path):
@@ -188,6 +229,28 @@ def main():
         if section == 'stackup':
             return 0
         print()
+
+    if section in ('origin', 'summary'):
+        ox, oy = origin(path)
+        print('=== 원점 ===')
+        print('  사용자 원점 (%.3f, %.3f) mm  — 아래 좌표는 전부 이 점 기준' % (ox, oy))
+        if section == 'origin':
+            return 0
+        print()
+
+    if section == 'positions':
+        only = [a.strip() for a in arg.split(',')] if arg else None
+        pos = positions(path, only)
+        ox, oy = origin(path)
+        print('=== 배치 %d개 (원점 %.3f, %.3f 기준) ===' % (len(pos), ox, oy))
+        print('  %-8s %9s %9s  %-14s %6s  %s'
+              % ('지정자', 'X', 'Y', '층', '회전', '풋프린트'))
+        for des in sorted(pos, key=lambda d: (re.sub(r'\d', '', d),
+                                              int(re.sub(r'\D', '', d) or 0))):
+            p_ = pos[des]
+            print('  %-8s %9.3f %9.3f  %-14s %6g  %s'
+                  % (des, p_['x'], p_['y'], p_['layer'], p_['rotation'], p_['footprint']))
+        return 0
 
     if section in ('components', 'summary'):
         comp = components(path)
