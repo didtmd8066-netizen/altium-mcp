@@ -218,11 +218,14 @@ def cmd_clone(by_net, by_comp, ref, targets, pcbdoc, wires, outdir):
         return all(x0 <= x <= x1 and y0 <= y <= y1 for x, y in pts)
 
     own = {R[ref][k] for k in ('gate', 'drain', 'in', 'out')}
-    # 공유 넷은 "다른 블록의 넷이 아닌 것"이 아니라 전원·버스 기준으로 판정한다.
-    # 덤프에 다른 블록의 넷이 섞여 있으면 전자는 그것까지 공유로 잡는다.
+    # 공유 넷(SB_24V·GND 같은 전원·버스)은 복제도 삭제도 하지 않는다. 블록
+    # 사이를 잇는 배선이라 블록마다 형상이 다르고 이미 깔려 있어서, 대상마다
+    # 사본이 하나씩 더 생기면 같은 자리에 트랙·비아가 여러 겹으로 쌓인다.
+    # 판정은 넷 이름이 아니라 전원 패턴 또는 팬아웃 기준으로 한다 - 덤프에
+    # 다른 블록의 넷이 섞여 있으면 "내 넷이 아닌 것"은 전부 공유로 잡힌다.
     shared = {n for n in {r[1] for r in rows}
               if POWER.match(n) or len(by_net[n]) >= FANOUT_STOP}
-    src = [r for r in rows if (r[1] in own or r[1] in shared) and inside(ref, r)]
+    src = [r for r in rows if r[1] in own and inside(ref, r)]
     rn = {R[ref][k]: k for k in ('gate', 'drain', 'in', 'out')}
 
     dele, crea = [], []
@@ -231,11 +234,11 @@ def cmd_clone(by_net, by_comp, ref, targets, pcbdoc, wires, outdir):
         dy = int(round((pos[t]['y'] - pos[ref]['y']) / MM_PER_UNIT))
         tn = {k: R[t][k] for k in ('gate', 'drain', 'in', 'out')}
         for r in rows:
-            if (r[1] in set(tn.values()) or r[1] in shared) and inside(t, r):
+            if r[1] in set(tn.values()) and inside(t, r):
                 key = [r[0], r[1], r[4], r[5], r[6] if r[0] == 'T' else '0']
                 dele.append('|'.join(key))
         for r in src:
-            net = r[1] if r[1] in shared else tn[rn[r[1]]]
+            net = tn[rn[r[1]]]
             if r[0] == 'T':
                 crea.append(('T', net, r[2], r[3], int(r[4]) + dx, int(r[5]) + dy,
                              int(r[6]) + dx, int(r[7]) + dy))
@@ -249,8 +252,9 @@ def cmd_clone(by_net, by_comp, ref, targets, pcbdoc, wires, outdir):
         fh.write(chr(10).join(str(v) for row in crea for v in row))
     with open(dpath, 'w', encoding='latin-1') as fh:                 # IndexOf 매칭용 한 줄
         fh.write(chr(10).join(dele))
-    print('기준 %s  블록내 트랙 %d · 비아 %d'
-          % (ref, len([r for r in src if r[0] == 'T']), len([r for r in src if r[0] == 'V'])))
+    print('기준 %s  블록 고유 넷의 트랙 %d · 비아 %d   (공유 넷 %d종은 제외)'
+          % (ref, len([r for r in src if r[0] == 'T']),
+             len([r for r in src if r[0] == 'V']), len(shared)))
     print('대상 %s' % ', '.join(targets))
     print('  생성 %d개 -> %s   (%d줄, 넷 %d종)'
           % (len(crea), cpath, len(crea) * 8, len({c[1] for c in crea})))
