@@ -30,6 +30,12 @@ var
     Stack1     : IPCB_LayerStack_V7;
     Lay1, Lay2, Lay3 : IPCB_LayerObject_V7;
     Diel1      : IPCB_DielectricObject;
+    // 최신 스택(Layer Stack Manager 가 실제로 보여 주는 것)은 MasterLayerStack 쪽이다.
+    // LayerStack_V7 로 쓴 유전체 값은 UI 에 반영되지 않는다.
+    Master1    : IPCB_MasterLayerStack;
+    LObj1, LObj2 : IPCB_LayerObject;
+    ELay1      : IPCB_ElectricalLayer;
+    DLay1      : IPCB_DielectricLayer;
     List1      : TStringList;
     IntMan     : IIntegratedLibraryManager;
     DbDoc      : IDatabaseLibDocument;
