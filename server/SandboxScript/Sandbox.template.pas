@@ -23,6 +23,13 @@ var
     I1, I2, I3 : Integer;
     B1         : Integer;
     Obj1, Obj2, Obj3, Obj4, Obj5 : IDispatch;
+    // 타입이 있어야 하는 것들. Altium 의 PCB 인터페이스는 IDispatch 로 늦은 바인딩이
+    // 되지 않아, IDispatch 스크래치로는 LayerStack_V7.FirstLayer 같은 프로퍼티 접근이
+    // 조용히 죽는다. 레이어 스택을 다루려면 아래 타입 변수를 쓸 것.
+    Brd1       : IPCB_Board;
+    Stack1     : IPCB_LayerStack_V7;
+    Lay1, Lay2, Lay3 : IPCB_LayerObject_V7;
+    Diel1      : IPCB_DielectricObject;
     List1      : TStringList;
     IntMan     : IIntegratedLibraryManager;
     DbDoc      : IDatabaseLibDocument;
