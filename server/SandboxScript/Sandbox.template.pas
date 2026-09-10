@@ -36,6 +36,7 @@ var
     LObj1, LObj2 : IPCB_LayerObject;
     ELay1      : IPCB_ElectricalLayer;
     DLay1      : IPCB_DielectricLayer;
+    SubStk1    : IPCB_LayerStack;
     List1      : TStringList;
     IntMan     : IIntegratedLibraryManager;
     DbDoc      : IDatabaseLibDocument;
