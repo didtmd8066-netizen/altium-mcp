@@ -37,6 +37,10 @@ var
     ELay1      : IPCB_ElectricalLayer;
     DLay1      : IPCB_DielectricLayer;
     SubStk1    : IPCB_LayerStack;
+    // 워크스페이스/프로젝트/문서도 늦은 바인딩이 안 된다.
+    Wksp1      : IWorkspace;
+    Prj1       : IProject;
+    Doc1       : IDocument;
     List1      : TStringList;
     IntMan     : IIntegratedLibraryManager;
     DbDoc      : IDatabaseLibDocument;
