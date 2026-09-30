@@ -4,7 +4,9 @@
 // 입력: 한 객체당 7줄, 넷 이름 순으로 정렬 (넷 조회를 넷 종류 수만큼으로 줄이려고).
 //   비아: V / 넷 / x / y / size / hole / -
 //   트랙: T / 넷 / x1 / y1 / x2 / y2 / 층:폭   (예: Bottom Layer:0.2, 층은 Layer2String 표기)
-// 좌표·크기는 보드 origin 기준 mm. 비아는 Top-Bottom 관통으로 만든다.
+//   아크: A / 넷 / cx / cy / r / 시작각:끝각 / 층:폭   (원은 0:360)
+// 넷이 없는 기구층 선은 넷 자리에 '-' 를 쓴다. 좌표·크기는 보드 origin 기준 mm.
+// 비아는 Top-Bottom 관통으로 만든다.
 //
 // 주의: 이미 있는 객체에 Obj.Net := 는 반영되지 않는다. 넷은 반드시 생성 시점에 넣는다.
 Brd1 := PCBServer.GetCurrentPCBBoard;
@@ -18,6 +20,7 @@ while I1 + 6 < List1.Count do
 begin
   S1 := List1[I1];
   S2 := List1[I1+1];
+  if (S2 <> S3) and (S2 = '-') then begin Obj5 := nil; S3 := S2; end;
   if S2 <> S3 then
   begin
     Obj5 := nil;
@@ -44,6 +47,21 @@ begin
     Obj4.HoleSize := MMsToCoord(StrToFloat(List1[I1+5]));
     Obj4.LowLayer := eTopLayer;
     Obj4.HighLayer := eBottomLayer;
+  end
+  else if S1 = 'A' then
+  begin
+    Obj4 := PCBServer.PCBObjectFactory(eArcObject, eNoDimension, eCreate_Default);
+    Obj4.XCenter := MMsToCoord(StrToFloat(List1[I1+2])) + Brd1.XOrigin;
+    Obj4.YCenter := MMsToCoord(StrToFloat(List1[I1+3])) + Brd1.YOrigin;
+    Obj4.Radius := MMsToCoord(StrToFloat(List1[I1+4]));
+    S1 := List1[I1+5];
+    B1 := Pos(':', S1);
+    Obj4.StartAngle := StrToFloat(Copy(S1, 1, B1 - 1));
+    Obj4.EndAngle := StrToFloat(Copy(S1, B1 + 1, 20));
+    S1 := List1[I1+6];
+    B1 := Pos(':', S1);
+    Obj4.Layer := String2Layer(Copy(S1, 1, B1 - 1));
+    Obj4.LineWidth := MMsToCoord(StrToFloat(Copy(S1, B1 + 1, 20)));
   end
   else
   begin
