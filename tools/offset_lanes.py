@@ -96,10 +96,13 @@ def main():
     lay = a.layer
 
     rv = sorted([v for v in objs if v.kind == 'V' and v.net == a.ref], key=lambda v: math.dist((v.x, v.y), cpos))
-    if len(rv) < 2:
-        sys.exit('기준 넷에 via 가 2개(커넥터 쪽, LED 쪽) 있어야 한다.')
+    if not rv:
+        sys.exit('기준 넷에 커넥터 쪽 via 가 없다.')
     prims, end = ref_path(objs, a.ref, lay, (rv[0].x, rv[0].y))
-    tmpl = rv[-1]
+    # 복제할 via: 기준 넷의 LED 쪽 via. 기준 넷이 아직 LED 까지 안 갔으면 보드에서 커넥터와 가장 먼 신호 via
+    far = sorted([v for v in objs if v.kind == 'V' and abs(v.size - rv[0].size) < 1e-6],
+                 key=lambda v: math.dist((v.x, v.y), cpos))
+    tmpl = rv[-1] if len(rv) >= 2 else far[-1]
 
     plans, new, rem = [], [], []
     for net in a.nets.split(','):
