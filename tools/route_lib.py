@@ -14,12 +14,26 @@
 
 0.4mm 피치 평행선은 간격이 정확히 0.2mm 라 부동소수 오차로 0.1999 가 나온다.
 그래서 판정은 `clearance - TOL` 로 한다.
+
+부품을 옮기거나 돌릴 때 (2026-10-01 CHEST BLOOD 에서 정리)
+--------------------------------------------------------
+패드가 움직이면 거기 붙은 비아·선도 따라가야 한다. 끝점만 옮기면 선 각도가 틀어지므로
+각도를 지키는 두 함수를 쓴다.
+  slide_chain()  비아 -> 선 -> (아크) -> 레인. 비아가 m 만큼 움직일 때 첫 선과 레인의 방향을
+                 그대로 두고 레인 길이만 바꾼다.
+  fillet()       패드에서 나온 선과 다음 선을 반지름 r 아크로 다시 잇는다.
+아주 조금(um 단위) 움직이면 새 객체와 지울 객체의 키가 같아진다. 그대로 두면 만든 직후
+지워지므로 `drop_unchanged()` 로 양쪽에서 빼고 기존 객체를 살린다.
+
+**덤프는 적용 직전에 뜬다.** 사용자가 같은 보드를 만지는 중이면 덤프와 보드가 어긋나
+삭제 키와 비아 견본을 못 찾는다 (계획 118 개 중 71 개만 지워진 적이 있다). apply_plan.pas 가
+돌려준 개수가 write_plan() 의 반환값과 다르면 부분 적용된 것이니 바로 알리고 멈춘다.
 """
 import itertools
 import math
 
 from shapely import affinity
-from shapely.geometry import LineString, Point, box
+from shapely.geometry import LineString, Point, Polygon, box
 
 TOL = 0.001
 TOP, BOT = 'Top Layer', 'Bottom Layer'
@@ -44,10 +58,28 @@ def load_dump(path):
                            b=(float(f[6]), float(f[7])), w=float(f[8])))
         elif k == 'A':
             out.append(Obj(kind='A', net=net, sel=sel, layer=f[3], c=(float(f[4]), float(f[5])),
-                           r=float(f[6]), a1=float(f[7]), a2=float(f[8]), w=0.2))
+                           r=float(f[6]), a1=float(f[7]), a2=float(f[8]),
+                           w=float(f[9]) if len(f) > 9 else 0.2))
         elif k == 'P':
             out.append(Obj(kind='P', net=net, sel=sel, ref=f[3], x=float(f[4]), y=float(f[5]), rot=float(f[6])))
     return out
+
+
+def load_board(path):
+    """덤프 전체: (동박 객체, {지정자: (x, y, 회전)}, 외곽 Polygon 또는 None)."""
+    comps, outline = {}, []
+    for line in open(path, encoding='latin-1'):
+        f = line.strip().split('|')
+        if f[0] == 'C' and len(f) >= 6:
+            comps[f[1]] = (float(f[3]), float(f[4]), float(f[5]))
+        elif f[0] == 'O' and f[1] == 'L':
+            outline.append((float(f[2]), float(f[3])))
+        elif f[0] == 'O' and f[1] == 'A':
+            pts = arc_points((float(f[4]), float(f[5])), float(f[6]), float(f[7]), float(f[8]))
+            if math.dist(pts[-1], (float(f[2]), float(f[3]))) < math.dist(pts[0], (float(f[2]), float(f[3]))):
+                pts.reverse()
+            outline += pts
+    return load_dump(path), comps, (Polygon(outline) if len(outline) >= 3 else None)
 
 
 # ── 형상 ────────────────────────────────────────────────────────────────
@@ -174,3 +206,107 @@ def touching(objs, p, net=None, layer=None, kind='T', tol=0.03):
 def arc_ends(a):
     p = arc_points(a.c, a.r, a.a1, a.a2, 1)
     return p[0], p[-1]
+
+
+# ── 부품 이동을 따라가는 배선 ───────────────────────────────────────────
+def _unit(a, b):
+    L = math.dist(a, b)
+    return ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+
+
+def real_arcs(objs, p, net, layer, tol=0.03):
+    """끝점이 p 에 닿는 아크. 길이가 거의 0 인 조각(Gloss 찌꺼기)은 뺀다."""
+    return [a for a in objs if a.kind == 'A' and a.net == net and a.layer == layer and (a.a2 - a.a1) % 360 > 1
+            and any(near(e, p, tol) for e in arc_ends(a))]
+
+
+def slide_chain(objs, via_pos, m, net, layer=BOT):
+    """비아가 m 만큼 움직일 때 붙은 배선을 각도를 지킨 채 따라가게 한다.
+
+    비아 -> 첫 선 -> (아크) -> 레인 구조에서 첫 선과 레인의 방향은 그대로 두고, 레인 끝과
+    아크를 레인 방향으로 al 만큼 민다 (m = al*레인방향 + be*첫선방향 으로 분해).
+    구조가 다르거나 두 방향이 평행에 가까우면 첫 선의 끝점만 옮긴다.
+    반환: (지울 객체, 새 객체, 설명). 비아 자체는 호출자가 옮긴다.
+    """
+    nv = (via_pos[0] + m[0], via_pos[1] + m[1])
+    t1s = touching(objs, via_pos, net, layer)
+    if len(t1s) == 1:
+        t1 = t1s[0]
+        f1 = other_end(t1, via_pos)
+        d1 = _unit(f1, via_pos)
+        arcs = real_arcs(objs, f1, net, layer)
+        q = [e for e in arc_ends(arcs[0]) if not near(e, f1)][0] if len(arcs) == 1 else f1
+        t2 = [x for x in touching(objs, q, net, layer) if x is not t1]
+        if len(t2) == 1 and len(arcs) <= 1:
+            t2 = t2[0]
+            f2 = other_end(t2, q)
+            d2 = _unit(f2, q)
+            det = d2[0] * d1[1] - d2[1] * d1[0]
+            if abs(det) > 0.2:
+                al = (m[0] * d1[1] - m[1] * d1[0]) / det
+                mv = (al * d2[0], al * d2[1])
+                rem = [t1, t2] + arcs
+                new = [new_track(net, layer, f2, (q[0] + mv[0], q[1] + mv[1]), t2.w),
+                       new_track(net, layer, (f1[0] + mv[0], f1[1] + mv[1]), nv, t1.w)]
+                if arcs:
+                    a = arcs[0]
+                    new.append(new_arc(net, layer, (a.c[0] + mv[0], a.c[1] + mv[1]), a.r, a.a1, a.a2, a.w))
+                return rem, new, f'레인 {al:+.3f}'
+    return list(t1s), [new_track(net, layer, other_end(t, via_pos), nv, t.w) for t in t1s], '끝점만'
+
+
+def fillet(p, e, q, f, r):
+    """p 에서 방향 e 로 나가는 선과, q 에서 f 쪽으로 가는 선을 반지름 r 아크로 잇는다.
+
+    반환: (아크 중심, 첫 선의 접점, 둘째 선의 접점, 시작각, 끝각) - 각도는 Altium 규약(반시계).
+    둘째 선의 q 쪽 끝은 접점으로 옮겨야 한다.
+    """
+    dn = _unit(q, f)
+    n1 = (-e[1], e[0]); s1 = 1 if n1[0] * (f[0] - p[0]) + n1[1] * (f[1] - p[1]) > 0 else -1
+    n2 = (-dn[1], dn[0]); s2 = 1 if n2[0] * (p[0] - q[0]) + n2[1] * (p[1] - q[1]) > 0 else -1
+    b1 = s1 * r + n1[0] * p[0] + n1[1] * p[1]
+    b2 = s2 * r + n2[0] * q[0] + n2[1] * q[1]
+    det = n1[0] * n2[1] - n1[1] * n2[0]
+    c = ((b1 * n2[1] - b2 * n1[1]) / det, (n1[0] * b2 - n2[0] * b1) / det)
+    t1 = (c[0] - s1 * r * n1[0], c[1] - s1 * r * n1[1])
+    t2 = (c[0] - s2 * r * n2[0], c[1] - s2 * r * n2[1])
+    a1 = math.degrees(math.atan2(t1[1] - c[1], t1[0] - c[0])) % 360
+    a2 = math.degrees(math.atan2(t2[1] - c[1], t2[0] - c[0])) % 360
+    if (a2 - a1) % 360 > 180:
+        a1, a2 = a2, a1
+    return c, t1, t2, a1, a2
+
+
+def remap_ends(objs, mapping, net, layer, skip=(), tol=0.05):
+    """끝점이 mapping 의 키에 닿는 선을 새 끝점으로 다시 만든다 (분기점을 민 뒤 간선 정리용).
+
+    반환: (지울 객체, 새 객체). skip 에 든 객체는 건드리지 않는다.
+    """
+    gone = {id(o) for o in skip}
+    rem, new = [], []
+    for t in objs:
+        if t.kind != 'T' or t.net != net or t.layer != layer or id(t) in gone:
+            continue
+        a, b = t.a, t.b
+        for k, v in mapping.items():
+            if near(a, k, tol):
+                a = v
+            if near(b, k, tol):
+                b = v
+        if a != t.a or b != t.b:
+            rem.append(t); new.append(new_track(net, layer, a, b, t.w))
+    return rem, new
+
+
+def drop_unchanged(new, removed):
+    """새 객체와 지울 객체의 키가 같은 쌍을 양쪽에서 뺀다 (um 이하 이동). 뺀 개수를 돌려준다."""
+    n = 0
+    for o in list(new):
+        if o.kind == 'P':
+            continue
+        ko = keys(o)
+        for r in removed:
+            if r.kind == o.kind and r.kind != 'V' and ko & keys(r):
+                new.remove(o); removed.remove(r); n += 1
+                break
+    return n
