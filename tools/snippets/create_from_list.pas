@@ -8,9 +8,27 @@
 // 넷이 없는 기구층 선은 넷 자리에 '-' 를 쓴다. 좌표·크기는 보드 origin 기준 mm.
 // 비아는 Top-Bottom 관통으로 만든다.
 //
+// 비아 견본: 실행 전에 비아 하나를 선택해 두면 그 비아를 Replicate 로 복제해서 쓴다.
+//   사용자가 쓰던 비아의 속성(텐팅, 크기, 솔더마스크 설정)이 그대로 따라온다. 이때 목록의
+//   size/hole 은 무시한다. 텐팅은 스크립트로 켤 수 없으므로(IsTenting 쓰기 무시됨)
+//   텐팅이 필요한 비아는 반드시 이 방식으로 만든다. 선택된 비아가 없으면 기본값으로 만든다.
+//
 // 주의: 이미 있는 객체에 Obj.Net := 는 반영되지 않는다. 넷은 반드시 생성 시점에 넣는다.
 Brd1 := PCBServer.GetCurrentPCBBoard;
 List1.LoadFromFile('{IN}');
+Obj3 := nil;
+Obj1 := Brd1.BoardIterator_Create;
+Obj1.AddFilter_ObjectSet(MkSet(eViaObject));
+Obj1.AddFilter_LayerSet(AllLayers);
+Obj1.AddFilter_Method(eProcessAll);
+Obj2 := Obj1.FirstPCBObject;
+while Obj2 <> nil do
+begin
+  if Obj2.Selected then begin Obj3 := Obj2; Obj2 := nil; end
+  else Obj2 := Obj1.NextPCBObject;
+end;
+Brd1.BoardIterator_Destroy(Obj1);
+if Obj3 <> nil then SandboxLog('via template: selected via') else SandboxLog('via template: none (defaults)');
 PCBServer.PreProcess;
 S3 := '';
 Obj5 := nil;
@@ -40,13 +58,19 @@ begin
   end;
   if S1 = 'V' then
   begin
-    Obj4 := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
+    if Obj3 <> nil then
+      Obj4 := Obj3.Replicate
+    else
+    begin
+      Obj4 := PCBServer.PCBObjectFactory(eViaObject, eNoDimension, eCreate_Default);
+      Obj4.Size := MMsToCoord(StrToFloat(List1[I1+4]));
+      Obj4.HoleSize := MMsToCoord(StrToFloat(List1[I1+5]));
+      Obj4.LowLayer := eTopLayer;
+      Obj4.HighLayer := eBottomLayer;
+    end;
+    Obj4.Selected := False;
     Obj4.x := MMsToCoord(StrToFloat(List1[I1+2])) + Brd1.XOrigin;
     Obj4.y := MMsToCoord(StrToFloat(List1[I1+3])) + Brd1.YOrigin;
-    Obj4.Size := MMsToCoord(StrToFloat(List1[I1+4]));
-    Obj4.HoleSize := MMsToCoord(StrToFloat(List1[I1+5]));
-    Obj4.LowLayer := eTopLayer;
-    Obj4.HighLayer := eBottomLayer;
   end
   else if S1 = 'A' then
   begin

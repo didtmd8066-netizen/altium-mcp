@@ -37,6 +37,10 @@ var
     ELay1      : IPCB_ElectricalLayer;
     DLay1      : IPCB_DielectricLayer;
     SubStk1    : IPCB_LayerStack;
+    // 비아 텐팅(IsTenting / IsTenting_Top / IsTenting_Bottom)은 AD24 에서 쓰기가 안 된다.
+    // IDispatch 로도, 이 타입 변수로도, 생성 시점에 넣어도 값이 0 그대로다 (2026-10-01 검증).
+    // 읽기는 된다 -> 텐팅 안 된 비아를 골라 Selected 로 선택해 주고 체크는 사용자가 한다.
+    Via1       : IPCB_Via;
     // 워크스페이스/프로젝트/문서도 늦은 바인딩이 안 된다.
     Wksp1      : IWorkspace;
     Prj1       : IProject;
