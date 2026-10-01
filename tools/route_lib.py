@@ -147,7 +147,13 @@ def keys(o):
         vals, tag = (o.c[0], o.c[1], o.r), 'A'
     else:
         vals, tag = (o.x, o.y), 'V'
-    return {tag + ',' + ','.join(str(int(c)) for c in combo) for combo in itertools.product(*[_cands(v) for v in vals])}
+    out = {tag + ',' + ','.join(str(int(c)) for c in combo) for combo in itertools.product(*[_cands(v) for v in vals])}
+    if o.kind == 'T':
+        # 양방향 모두 낸다. Altium 은 등록할 때 끝점 순서를 바꿔 저장하기도 해서, 한 방향 키만 보면
+        # "옛 선과 같은 자리의 새 선"을 못 알아보고 만든 직후 지운다 (2026-10-01 팬아웃에서 3개 사라짐).
+        vals = (o.b[0], o.b[1], o.a[0], o.a[1])
+        out |= {tag + ',' + ','.join(str(int(c)) for c in combo) for combo in itertools.product(*[_cands(v) for v in vals])}
+    return out
 
 
 def new_track(net, layer, a, b, w=0.2):
