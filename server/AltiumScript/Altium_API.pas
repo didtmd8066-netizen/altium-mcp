@@ -75,7 +75,7 @@ begin
         end
         else
         begin
-            ShowMessage('Error: No designators found for get_component_pins');
+            LogScriptError('Error: No designators found for get_component_pins');
             Result := '';
         end;
     finally
@@ -557,7 +557,7 @@ begin
         end
         else
         begin
-            ShowMessage('Error: No component name provided');
+            LogScriptError('Error: No component name provided');
             Result := '';
         end;
     finally
@@ -684,7 +684,7 @@ begin
         end
         else
         begin
-            ShowMessage('Error: No designator found for set_component_position');
+            LogScriptError('Error: No designator found for set_component_position');
             Result := '';
         end;
     finally
@@ -762,7 +762,7 @@ begin
         end
         else
         begin
-            ShowMessage('Error: No designators found for move_components');
+            LogScriptError('Error: No designators found for move_components');
             Result := '';
         end;
     finally
@@ -1090,7 +1090,7 @@ begin
         end
         else
         begin
-            ShowMessage('Error: Source or destination lists are empty');
+            LogScriptError('Error: Source or destination lists are empty');
             Result := '{"success": false, "error": "Source or destination lists are empty"}';
         end;
     finally
@@ -1165,7 +1165,7 @@ begin
         end
         else
         begin
-            ShowMessage('Error: No container names specified');
+            LogScriptError('Error: No container names specified');
             Result := '{"success": false, "error": "No container names specified"}';
         end;
     finally
@@ -1466,28 +1466,37 @@ end;
 // Function to execute a command with parameters
 function ExecuteCommand(CommandName: String): String;
 var
-    i, ValueStart : Integer;
-    RequestedViewType : String;
+    ViewHint   : String;
+    HintIdx    : Integer;
+    HintStart  : Integer;
+    HintValue  : String;
 begin
     Result := '';
 
-    // take_view_screenshot needs to know the requested view_type (sch/pcb)
-    // before we decide which document kind to focus.
-    RequestedViewType := '';
-    if (CommandName = 'take_view_screenshot') then
+    // take_view_screenshot can target a PCB or a schematic. Pull view_type out
+    // of the request so the focus helper does not always demand a PCB.
+    ViewHint := '';
+    if CommandName = 'take_view_screenshot' then
     begin
-        for i := 0 to RequestData.Count - 1 do
+        for HintIdx := 0 to RequestData.Count - 1 do
         begin
-            if (Pos('"view_type"', RequestData[i]) > 0) then
+            if (Pos('"view_type"', RequestData[HintIdx]) > 0) then
             begin
-                ValueStart := Pos(':', RequestData[i]) + 1;
-                RequestedViewType := TrimJSON(Copy(RequestData[i], ValueStart, Length(RequestData[i]) - ValueStart + 1));
-                Break;
+                HintStart := Pos(':', RequestData[HintIdx]) + 1;
+                HintValue := Copy(RequestData[HintIdx], HintStart,
+                                  Length(RequestData[HintIdx]) - HintStart + 1);
+                ViewHint := LowerCase(TrimJSON(HintValue));
             end;
         end;
     end;
 
-    EnsureDocumentFocused(CommandName, RequestedViewType);
+    // A focus failure is an answer, not a dialog: WriteResponse turns the
+    // 'ERROR: ' prefix into success=false with this message.
+    if not EnsureDocumentFocused(CommandName, ViewHint) then
+    begin
+        Result := 'ERROR: ' + FocusFailure;
+        Exit;
+    end;
 
     // Direct command execution based on the command name
     case CommandName of
@@ -1555,6 +1564,9 @@ begin
             Result := ExecuteGetSymbolPrimitives(RequestData);
         'create_symbols_batch':
             Result := ExecuteCreateSymbolsBatch(RequestData);
+        'build_circuit':
+            Result := BuildCircuitFromSpec(ROOT_DIR + 'circuit_spec.txt',
+                                          ROOT_DIR + 'param_placement.txt');
         'get_footprint_primitives':
             Result := ExecuteGetFootprintPrimitives(RequestData);
         'create_footprints_batch':
@@ -1576,7 +1588,7 @@ begin
         'create_pcb_footprint':
             Result := ExecuteCreatePCBFootprint(RequestData);
     else
-        ShowMessage('Error: Unknown command: ' + CommandName);
+        LogScriptError('Error: Unknown command: ' + CommandName);
     end;
 end;
 
@@ -1676,7 +1688,7 @@ begin
     // Check if request file exists
     if not FileExists(REQUEST_FILE) then
     begin
-        ShowMessage('Error: No request file found at ' + REQUEST_FILE);
+        LogScriptError('Error: No request file found at ' + REQUEST_FILE);
         Exit;
     end;
 
@@ -1724,13 +1736,13 @@ begin
                 else
                 begin
                     WriteResponse(False, '', 'Command execution failed');
-                    ShowMessage('Error: Command execution failed');
+                    LogScriptError('Error: Command execution failed');
                 end;
             end
             else
             begin
                 WriteResponse(False, '', 'No command specified');
-                ShowMessage('Error: No command specified');
+                LogScriptError('Error: No command specified');
             end;
         finally
             RequestData.Free;
@@ -1739,7 +1751,7 @@ begin
     except
         // Simple exception handling without the specific exception type
         WriteResponse(False, '', 'Exception occurred during script execution');
-        ShowMessage('Error: Exception occurred during script execution');
+        LogScriptError('Error: Exception occurred during script execution');
     end;
 end;
 

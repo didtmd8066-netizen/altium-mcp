@@ -15,6 +15,7 @@ import win32gui
 import win32ui
 import win32con
 import win32api
+import win32process
 from PIL import Image
 import io
 import base64
@@ -35,7 +36,18 @@ logger = logging.getLogger("AltiumMCPServer")
 
 # Set MCP_DIR to the directory of the current Python file
 MCP_DIR = Path(__file__).parent
-CONFIG_FILE = MCP_DIR / "config.json"
+# config.json lives in a per-user folder OUTSIDE the install directory and
+# outside AppData. Claude Desktop replaces the extension folder on every
+# update, which used to reset a hand-picked Altium path; and being an MSIX
+# package it redirects its child processes' AppData writes into its own
+# LocalCache. start_server.py passes the folder it chose in ALTIUM_MCP_HOME.
+# LEGACY_CONFIG_FILE is read once to migrate.
+def _data_dir() -> Path:
+    override = os.environ.get("ALTIUM_MCP_HOME")
+    return Path(override) if override else Path.home() / ".altium-mcp"
+
+LEGACY_CONFIG_FILE = MCP_DIR / "config.json"
+CONFIG_FILE = _data_dir() / "config.json"
 DEFAULT_SCRIPT_PATH = MCP_DIR / "AltiumScript" / "Altium_API.PrjScr"
 
 # Use a fixed exchange directory for request/response JSON files.
@@ -58,21 +70,31 @@ class AltiumConfig:
         self.load_config()
     
     def load_config(self):
-        """Load configuration from file or create default if it doesn't exist"""
-        if CONFIG_FILE.exists():
+        """Load configuration, migrating a pre-relocation config.json once."""
+        source = CONFIG_FILE if CONFIG_FILE.exists() else LEGACY_CONFIG_FILE
+        if source.exists():
             try:
-                with open(CONFIG_FILE, "r") as f:
+                with open(source, "r") as f:
                     config = json.load(f)
-                    self.altium_exe_path = config.get("altium_exe_path", "")
-                    self.script_path = config.get("script_path", str(DEFAULT_SCRIPT_PATH))
-                logger.info(f"Loaded configuration from {CONFIG_FILE}")
+                self.altium_exe_path = config.get("altium_exe_path", "")
+                # Only a hand-picked script project is persisted. A saved path
+                # that no longer exists (old install folder) falls back to the
+                # project shipped beside this file instead of prompting.
+                saved_script = config.get("script_path", "")
+                if saved_script and os.path.exists(saved_script):
+                    self.script_path = saved_script
+                logger.info(f"Loaded configuration from {source}")
+                if source is LEGACY_CONFIG_FILE:
+                    self.save_config()
+                else:
+                    self._saved = self._as_dict()
             except Exception as e:
                 logger.error(f"Error loading configuration: {e}")
                 self._create_default_config()
         else:
             logger.info("No configuration file found, creating default")
             self._create_default_config()
-    
+
     def _create_default_config(self):
         """Create a default configuration file with improved Altium executable discovery"""
         
@@ -108,20 +130,30 @@ class AltiumConfig:
         # Save the configuration
         self.save_config()
     
+    def _as_dict(self):
+        config = {"altium_exe_path": self.altium_exe_path}
+        # The default script project belongs to whichever install is running
+        # (extension folder or a dev checkout), so it is never written down:
+        # both share this file and must not steal each other's scripts.
+        if Path(self.script_path) != DEFAULT_SCRIPT_PATH:
+            config["script_path"] = self.script_path
+        return config
+
     def save_config(self):
-        """Save configuration to file"""
-        config = {
-            "altium_exe_path": self.altium_exe_path,
-            "script_path": self.script_path
-        }
-        
+        """Save configuration to file, only when something changed"""
+        config = self._as_dict()
+        if config == getattr(self, "_saved", None) and CONFIG_FILE.exists():
+            return
+
         try:
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
             with open(CONFIG_FILE, "w") as f:
                 json.dump(config, f, indent=2)
+            self._saved = config
             logger.info(f"Saved configuration to {CONFIG_FILE}")
         except Exception as e:
             logger.error(f"Error saving configuration: {e}")
-    
+
     def verify_paths(self):
         """Verify that the paths in the configuration exist, prompt for input if they don't"""
 
@@ -661,7 +693,7 @@ async def search_library_symbol(ctx: Context, symbol_name: str, library_path: st
 
 @mcp.tool()
 async def create_schematic_symbol(ctx: Context, symbol_name: str, description: str, pins: list, part_count: int = 1, graphics: list = None) -> str:
-    """
+    r"""
     Before executing, run get_symbol_placement_rules first.
 
     For Altium API guidance while scripting, use the "altium-script" skill
@@ -1654,6 +1686,122 @@ async def create_footprints_batch(ctx: Context, spec_file: str) -> str:
     return json.dumps(result, indent=2) if not isinstance(result, str) else result
 
 @mcp.tool()
+async def build_schematic(ctx: Context, parts: list, wires: list = None,
+                          junctions: list = None, net_labels: list = None,
+                          power_ports: list = None, notes: list = None) -> str:
+    """
+    Build a wired schematic on a NEW sheet from a circuit description.
+
+    READ dev/SCHEMATIC_CONVENTIONS.md BEFORE CALLING. This tool places exactly
+    what it is given; it does not lay out or correct spacing. The conventions
+    file records the drafting rules that make the result readable, each one
+    learned by getting it wrong. The ones that most often produce a plausible
+    but wrong sheet:
+
+      * A pin's connection point is NOT Pin.Location - it is PinLength further
+        along the pin. Do not guess coordinates. Call with parts only first,
+        read the returned pin_map, then call again with wires routed from those
+        measured coordinates.
+      * Never run a riser in a pin's connection column; it drives through every
+        pin sharing that column.
+      * Give a shunt part one grid of wire between its pin and the node it taps,
+        rather than putting the junction on the pin.
+      * A net label that does not TOUCH its wire names nothing.
+      * A shunt part occupies the band below its rail. Do not route another net
+        through that band - the wire will pass through the symbol body.
+      * A ground port's "GND" label is always drawn (ShowNetName cannot hide it)
+        and occupies ~300 mil below the port. Keep wires out of that band.
+
+    Args:
+        parts: component dicts. Required keys: designator, symbol_library,
+            symbol, x, y (mils). Optional: design_item_id, orientation (0-3),
+            mirror (0/1), comment, description, footprint,
+            parameters ({name: value}).
+        wires: each a flat list of alternating x,y in mils, e.g.
+            [3900, 3000, 5300, 3000, 5300, 4900] - two segments, three points.
+        junctions: [{"x":..,"y":..}] - only where 3+ branches actually meet.
+        net_labels: [{"x":..,"y":..,"orientation":0,"text":"LED+"}] - the
+            coordinate must lie on a wire.
+        power_ports: [{"x":..,"y":..,"orientation":3,"style":5,"text":"GND",
+            "show_net_name":false}]. Harvest style/orientation from an existing
+            sheet rather than guessing: 5 = digital ground, 2 = supply bar.
+        notes: [{"x":..,"y":..,"text":".."}] free text.
+
+    Returns:
+        JSON with the created sheet name, counts, and the pin map - every
+        placed pin's true connection point, for routing a follow-up call.
+    """
+    logger.info(f"Building schematic: {len(parts)} parts")
+
+    lines = []
+    for p in parts:
+        for key in ("designator", "symbol_library", "symbol", "x", "y"):
+            if key not in p:
+                return json.dumps({"success": False,
+                                   "error": f"part missing required key '{key}': {p}"})
+        lines.append("PART|{}|{}|{}|{}|{}|{}|{}|{}".format(
+            p["designator"], p["symbol_library"], p["symbol"],
+            p.get("design_item_id", ""), int(p["x"]), int(p["y"]),
+            int(p.get("orientation", 0)), 1 if p.get("mirror") else 0))
+        if p.get("comment"):
+            lines.append(f"COMMENT|{p['comment']}")
+        if p.get("footprint"):
+            lines.append(f"FOOTPRINT|{p['footprint']}")
+        if p.get("description"):
+            lines.append(f"DESCRIPTION|{p['description']}")
+        for name, val in (p.get("parameters") or {}).items():
+            lines.append(f"PARAM|{name}|{val}")
+
+    for route in (wires or []):
+        if len(route) < 4 or len(route) % 2:
+            return json.dumps({"success": False,
+                               "error": f"wire needs an even count of >=4 coords: {route}"})
+        lines.append("WIRE|" + "|".join(str(int(v)) for v in route))
+    for j in (junctions or []):
+        lines.append(f"JUNCTION|{int(j['x'])}|{int(j['y'])}")
+    for n in (net_labels or []):
+        lines.append("NETLABEL|{}|{}|{}|{}".format(
+            int(n["x"]), int(n["y"]), int(n.get("orientation", 0)), n["text"]))
+    for pw in (power_ports or []):
+        lines.append("POWER|{}|{}|{}|{}|{}|{}".format(
+            int(pw["x"]), int(pw["y"]), int(pw.get("orientation", 3)),
+            int(pw.get("style", 5)), pw["text"],
+            1 if pw.get("show_net_name") else 0))
+    for nt in (notes or []):
+        lines.append(f"NOTE|{int(nt['x'])}|{int(nt['y'])}|{nt['text']}")
+
+    spec_path = Path("C:/Users/Public/altium_mcp/circuit_spec.txt")
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    # cp1252: the bridge reads these as ANSI, and part descriptions carry
+    # characters that are not plain ASCII
+    spec_path.write_text("\n".join(lines) + "\n", encoding="cp1252", errors="replace")
+
+    response = await altium_bridge.execute_command("build_circuit", {})
+    if not response.get("success", False):
+        return json.dumps({"success": False,
+                           "error": response.get("error", "unknown error")})
+
+    result = response.get("result", {})
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return result
+
+    # Hand back the measured pin map so the caller can route a second pass
+    pin_map = {}
+    pm = Path("C:/Users/Public/altium_mcp/pin_map.txt")
+    if pm.is_file():
+        for line in pm.read_text(errors="replace").splitlines():
+            f = line.strip().split("|")
+            if len(f) == 5 and f[0] == "PIN":
+                pin_map.setdefault(f[1], {})[f[2]] = [int(f[3]), int(f[4])]
+    result["pin_map"] = pin_map
+    result["pin_map_note"] = ("Absolute electrical connection points. Route "
+                              "wires from these, not from predicted offsets.")
+    return json.dumps(result, indent=2)
+
+@mcp.tool()
 async def create_symbols_batch(ctx: Context, spec_file: str) -> str:
     """
     Create many schematic symbols in a single Altium script run.
@@ -2604,6 +2752,9 @@ async def get_screenshot(ctx: Context, view_type: str = "current", zoom_to: list
     logger.info(f"Taking screenshot of Altium {view_type} window (zoom_to={zoom_to})")
 
     try:
+        focus_info = {}
+        focused_kind = ""
+        focused_document = ""
         # Switching documents steals the tab the user is working in, so only do
         # it when the caller actually asked for a specific document kind (or
         # needs a zoom, which is a PCB operation). The default just captures
@@ -2623,7 +2774,27 @@ async def get_screenshot(ctx: Context, view_type: str = "current", zoom_to: list
                 error_msg = response.get("error", "Unknown error")
                 logger.error(f"Error focusing {view_type} document: {error_msg}")
                 return json.dumps({"success": False, "error": f"Failed to focus the correct document type: {error_msg}"})
-        
+
+            # Altium reports which document ended up focused. If it is not the
+            # kind that was asked for (typically: no document of that kind is
+            # open), say so instead of returning the wrong editor labelled as
+            # the requested view.
+            focus_info = response.get("result", {})
+            focus_info = focus_info if isinstance(focus_info, dict) else {}
+            focused_kind = str(focus_info.get("focused_kind", "") or "").upper()
+            focused_document = focus_info.get("focused_document", "")
+            wanted_kind = {"pcb": "PCB", "sch": "SCH"}.get(view_type.lower())
+            if wanted_kind and focused_kind and focused_kind != wanted_kind:
+                logger.error(f"Requested {view_type} view but {focused_kind} document is focused")
+                return json.dumps({
+                    "success": False,
+                    "error": f"Requested a '{view_type}' view but Altium has a {focused_kind} "
+                             f"document focused ({focused_document}). Is a "
+                             f"{wanted_kind} document open in the active project?",
+                    "requested_view_type": view_type,
+                    "focused_kind": focused_kind,
+                    "focused_document": focused_document})
+
         # Run the screenshot capture in a separate thread
         import threading
         import queue
@@ -2673,25 +2844,66 @@ async def get_screenshot(ctx: Context, view_type: str = "current", zoom_to: list
                     })
                     return
                 
-                # Use the first matching window
-                window = altium_windows[0]
+                # Altium owns several top-level windows with its name in the
+                # title, and while it switches documents a small transient one
+                # can come first. Take the largest window that is not
+                # minimized: that is the main frame.
+                def area(w):
+                    l, t, r, b = w["rect"]
+                    return max(0, r - l) * max(0, b - t)
+                candidates = [w for w in altium_windows if not win32gui.IsIconic(w["handle"])]
+                window = max(candidates or altium_windows, key=area)
                 hwnd = window["handle"]
                 
-                # Get window dimensions
-                left, top, right, bottom = window["rect"]
-                width = right - left
-                height = bottom - top
-                
-                if width <= 0 or height <= 0:
-                    result_queue.put({"success": False, "error": f"Invalid window dimensions: {width}x{height}"})
-                    return
-                
-                # Try to activate the window
+                # Bring Altium to the front and let it paint. Altium only
+                # renders a schematic view once it has actually been shown on
+                # screen, so a capture taken while it sits behind another
+                # window comes back with a blank canvas. Windows may refuse
+                # SetForegroundWindow from a process that neither is nor was
+                # started by the foreground process; a synthetic Alt press
+                # before the call is the standard unlock and is harmless.
+                activated = False
+                altium_pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+
+                def altium_is_foreground():
+                    # Altium owns several top-level windows; any of them
+                    # being foreground means Altium is in front.
+                    fg = win32gui.GetForegroundWindow()
+                    return bool(fg) and win32process.GetWindowThreadProcessId(fg)[1] == altium_pid
+
                 try:
-                    win32gui.SetForegroundWindow(hwnd)
-                    time.sleep(0.5)
+                    for attempt in range(2):
+                        if attempt:
+                            import ctypes
+                            ctypes.windll.user32.keybd_event(0x12, 0, 0, 0)
+                            ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)
+                        try:
+                            win32gui.SetForegroundWindow(hwnd)
+                        except Exception:
+                            pass
+                        deadline = time.time() + 1.5
+                        while time.time() < deadline:
+                            time.sleep(0.1)
+                            if altium_is_foreground():
+                                activated = True
+                                break
+                        if activated:
+                            break
                 except Exception as e:
                     logger.warning(f"Could not bring window to foreground: {e}")
+                if not activated:
+                    logger.warning("Altium is not the foreground window; the capture may show an unpainted view")
+                # A freshly switched-to document needs a moment to render.
+                time.sleep(1.0)
+
+                # Measure AFTER activation: restoring or switching can change
+                # the frame's size.
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                width = right - left
+                height = bottom - top
+                if width < 200 or height < 150:
+                    result_queue.put({"success": False, "error": f"Altium window is too small to capture ({width}x{height}); is it minimized?"})
+                    return
                 
                 # Take screenshot using GDI functions instead of ImageGrab
                 try:
@@ -2745,6 +2957,7 @@ async def get_screenshot(ctx: Context, view_type: str = "current", zoom_to: list
                         "window_title": window["title"],
                         "window_class": window["class_name"],
                         "view_type": view_type,
+                        "foreground_confirmed": activated,
                         "image_format": "PNG",
                         "encoding": "base64",
                         "debug_file": debug_filename,
@@ -2804,6 +3017,9 @@ async def get_screenshot(ctx: Context, view_type: str = "current", zoom_to: list
         zoom_info = response.get("result", {})
         if isinstance(zoom_info, dict) and "zoomed_component_count" in zoom_info:
             result["zoomed_component_count"] = zoom_info["zoomed_component_count"]
+        # What was actually captured, as opposed to what was requested
+        result["captured_kind"] = focused_kind or None
+        result["captured_document"] = focused_document or None
         return [
             json.dumps(result),
             MCPImage(data=base64.b64decode(image_base64), format="png"),

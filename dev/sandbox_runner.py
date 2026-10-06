@@ -28,6 +28,7 @@ Experiment body rules:
 """
 import ctypes
 import json
+import os
 import subprocess
 import sys
 import time
@@ -43,7 +44,14 @@ SANDBOX_RESULT = EXCHANGE / "sandbox_result.json"
 BEGIN = "// === BEGIN EXPERIMENT"
 END = "// === END EXPERIMENT"
 
-config = json.load(open(REPO / "server" / "config.json"))
+def _config_path():
+    # Same resolution as server/main.py; falls back to the pre-relocation file.
+    home = Path(os.environ.get("ALTIUM_MCP_HOME") or Path.home() / ".altium-mcp")
+    new = home / "config.json"
+    return new if new.exists() else REPO / "server" / "config.json"
+
+
+config = json.load(open(_config_path()))
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from unwedge import unwedge  # noqa: E402
@@ -211,10 +219,17 @@ def run(timeout=120, quiet=False):
         print("-" * 62)
         print(f">> Script STOPPED after: {lines[-1] if lines else '(nothing)'}")
         print(">> The statement AFTER that step is what crashed or paused.")
-        print(">> Clearing the paused debugger (Ctrl+F3) so the next run works...")
-        unwedge(verbose=False)
+        # Recover automatically and PROVE it worked, so the next experiment is
+        # not a false negative. unwedge() dispatches EditScript:Stop into the
+        # running instance (no window focus needed) and verifies by running a
+        # probe script; Ctrl+F3 is only a fallback.
         for shot in capture_script_editor():
             print(f">> Altium window captured (look for the paused line): {shot}")
+        print(">> Clearing the paused debugger...")
+        if unwedge(verbose=False):
+            print(">> Executor recovered and VERIFIED alive - re-run the experiment.")
+        else:
+            print(">> Could not clear the debugger; re-run with --auto-restart.")
     else:
         print("STEP LOG: (missing - the script never started)")
         print(">> Usually a COMPILE error (see dialog text above), or a")
