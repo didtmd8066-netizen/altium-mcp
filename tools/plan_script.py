@@ -13,7 +13,7 @@ MCP 도구 `dump_copper` / `apply_plan` 이 이 모듈을 쓴다. 그 도구들�
   - 전체 경로를 주면 포커스와 상관없이 그 문서를 쓴다 (Altium 에 열려 있어야 한다).
     사용자가 다른 보드를 보고 있어도 된다.
   - 파일 이름 일부(예: HEAD_RIGHT)를 주면 포커스된 보드의 경로에 그 글자가 들어 있을 때만 한다.
-어느 쪽도 아니면 아무것도 하지 않고 'NO BOARD' 를 돌려준다. 사용자가 중간에 다른 보드로
+어느 쪽도 아니면 (또는 잡힌 것이 PcbLib 이면) 아무것도 하지 않고 'NO BOARD' 를 돌려준다. 사용자가 중간에 다른 보드로
 넘어갔는데 계획을 엉뚱한 보드에 적용하는 사고를 막는 장치다 - 보드를 고치는 적용에는 꼭 준다.
 한글 경로는 스크립트 원문에 넣으면 깨지므로 ANSI 파일에 적어 두고 스크립트가 읽는다.
 """
@@ -25,6 +25,11 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SNIPPETS = os.path.join(HERE, 'snippets')
+
+
+# PcbLib 이 포커스돼 있으면 GetCurrentPCBBoard 가 라이브러리를 보드처럼 돌려준다. 그대로 덤프하면
+# 외곽을 읽다가 스크립트가 멈춘다 (2026-10-07 R&C.PcbLib 에서 실행기가 wedge 됐다).
+LIB_GUARD = ['if Brd1 <> nil then', '  if Brd1.IsLibrary then Brd1 := nil;']
 
 
 def _q(path):
@@ -53,7 +58,7 @@ def _blocks(lines):
 def board_block(board=None, workdir=None):
     """Brd1 을 정하는 문장들. board 가 있으면 그 보드가 아닐 때 Brd1 이 nil 이 된다."""
     if not board:
-        return ['Brd1 := PCBServer.GetCurrentPCBBoard;']
+        return ['Brd1 := PCBServer.GetCurrentPCBBoard;'] + LIB_GUARD
     workdir = workdir or tempfile.gettempdir()
     # 줄 1: 경로로 찾을 때 쓸 글자 (Altium 이 아는 꼴 = 긴 이름의 절대 경로)
     # 줄 2: 경로로 못 찾았을 때 포커스된 보드의 경로에 들어 있어야 하는 글자 (파일 이름)
@@ -74,7 +79,7 @@ def board_block(board=None, workdir=None):
             '  Brd1 := PCBServer.GetCurrentPCBBoard;',
             '  if Brd1 <> nil then',
             '    if Pos(UpperCase(S2), UpperCase(Brd1.FileName)) = 0 then Brd1 := nil;',
-            'end;']
+            'end;'] + LIB_GUARD
 
 
 def _long(path):
