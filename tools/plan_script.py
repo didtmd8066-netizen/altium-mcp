@@ -28,8 +28,10 @@ SNIPPETS = os.path.join(HERE, 'snippets')
 
 
 # PcbLib 이 포커스돼 있으면 GetCurrentPCBBoard 가 라이브러리를 보드처럼 돌려준다. 그대로 덤프하면
-# 외곽을 읽다가 스크립트가 멈춘다 (2026-10-07 R&C.PcbLib 에서 실행기가 wedge 됐다).
-LIB_GUARD = ['if Brd1 <> nil then', '  if Brd1.IsLibrary then Brd1 := nil;']
+# 외곽을 읽다가 스크립트가 멈춘다 (2026-10-06 R&C.PcbLib 에서 실행기가 wedge 됐다).
+# 판정은 확장자로 한다. Brd1.IsLibrary 는 PcbDoc 에서도 참으로 나와 쓸 수 없다 - 그걸로 가드를 짰다가
+# 모든 보드가 'NO BOARD' 로 막혔다 (2026-10-06, 푸시한 뒤에 발견).
+LIB_GUARD = ['if Brd1 <> nil then', "  if UpperCase(ExtractFileExt(Brd1.FileName)) = '.PCBLIB' then Brd1 := nil;"]
 
 
 def _q(path):

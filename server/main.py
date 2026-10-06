@@ -1171,8 +1171,16 @@ def _stop_paused_altium_script():
     A DelphiScript runtime error parks the script in the debugger with no
     dialog, and every later run then returns the PREVIOUS run's log instead of
     executing - a stale result that reads like a real one. Altium exposes no
-    process for this (ScriptingSystem:StopScript and friends do nothing), so
-    the only route is the keystroke.
+    process for this that works here: ScriptingSystem:StopScript and friends
+    do nothing, and `X2.EXE -REditScript:Stop` (what upstream's dev/unwedge.py
+    uses) did not clear a deliberately paused script on this machine either -
+    tested 2026-10-06. So the only route is the keystroke.
+
+    Do NOT try to deliver the keystroke by posting messages to the script
+    editor window or by clicking its tab first. Neither stopped the script,
+    and the input marked the editor buffer modified, after which Altium kept
+    running the stale buffer instead of the file on disk (see the "stale
+    copy" diagnosis in _run_sandbox).
 
     SetForegroundWindow alone is refused: Windows will not let a background
     process steal focus. Attaching to Altium's input thread first lifts that
@@ -1357,6 +1365,7 @@ async def _run_sandbox(script: str, timeout_seconds: int = 120) -> str:
                 # A queued earlier run just landed. Clear it and keep waiting
                 # for ours rather than handing it back.
                 logger.info("sandbox: discarding output from an earlier queued run")
+                foreign.append(next((ln for ln in log if SANDBOX_RUN_TAG in ln), "?"))
                 _discard()
             await asyncio.sleep(0.5)
             if time.time() - began > 6:
@@ -1365,6 +1374,8 @@ async def _run_sandbox(script: str, timeout_seconds: int = 120) -> str:
         log = _read_log()
         return (log if _is_ours(log) else []), popups, None
 
+    # Run tags of output that was produced during this call but is not ours.
+    foreign = []
     steps, dialogs, result_text = await launch()
     cleared = False
 
@@ -1399,6 +1410,25 @@ async def _run_sandbox(script: str, timeout_seconds: int = 120) -> str:
                          "Could not clear it automatically - stop the paused script in "
                          "Altium's script editor (Ctrl+F3) or restart Altium."),
             "steps": steps,
+            "dialogs_dismissed": dialogs}, indent=2)
+
+    if foreign:
+        # Altium DID run something, with someone else's run tag, and never ran
+        # ours. One stale result is a queued earlier run; the same tag coming
+        # back means Altium is executing the Sandbox.pas it has open in the
+        # script editor instead of the file on disk. That happens once the
+        # editor buffer is marked modified (a click or keystroke landing in it
+        # is enough) - Altium then stops reloading the file. Ctrl+F3 does not
+        # help: nothing is paused. Seen 2026-10-06 after automated key input.
+        return json.dumps({
+            "success": False,
+            "error": "Altium ran a stale copy of the sandbox script, not this one",
+            "diagnosis": "The executor is alive, but it executed the Sandbox.pas held in "
+                         "Altium's script editor instead of the file on disk.",
+            "executor_wedged": False,
+            "stale_run_tags": foreign,
+            "recovery": "In Altium, close the Sandbox.pas tab WITHOUT saving, then run again. "
+                        "Ctrl+F3 does not fix this.",
             "dialogs_dismissed": dialogs}, indent=2)
 
     return json.dumps({

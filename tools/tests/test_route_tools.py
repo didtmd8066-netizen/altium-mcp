@@ -260,9 +260,9 @@ def test_apply_script_drops_empty_side(plan):
 def test_board_block_guards_the_target(plan):
     _, _, work = plan
     assert ps.board_block() == ['Brd1 := PCBServer.GetCurrentPCBBoard;'] + ps.LIB_GUARD
-    assert any('IsLibrary' in ln for ln in ps.LIB_GUARD)
+    assert any(".PCBLIB" in ln for ln in ps.LIB_GUARD) and not any('IsLibrary' in ln for ln in ps.LIB_GUARD)
     block = '\n'.join(ps.board_block('HEAD_RIGHT', work))
-    assert 'GetPCBBoardByPath' in block and 'Brd1 := nil' in block and 'IsLibrary' in block
+    assert 'GetPCBBoardByPath' in block and 'Brd1 := nil' in block and '.PCBLIB' in block
     path = block.split("'")[1]
     assert open(path, encoding='mbcs' if sys.platform == 'win32' else 'utf-8').read().splitlines() == ['HEAD_RIGHT', 'HEAD_RIGHT']
 
