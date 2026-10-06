@@ -238,6 +238,14 @@ Not MCP tools - plain scripts that run against files on disk, with Altium closed
   python tools/stitch_vias.py <board.PcbDoc> plan --redo --land-gap 0.51
   ```
 
+- `rules_rul.py`: Write design rules as a `.RUL` file for `Design > Rules > Import Rules`, including the Advanced clearance matrix (a different gap per object-kind pair), which scripts cannot read or write - `create_pcb_clearance_rule` can only make single-value rules. `copy` lifts rules out of a board or another `.RUL` (optionally changing individual cells or the default gap on the way); `new` builds a clearance rule from a name, scopes, a default gap and the cells that differ, optionally starting from an existing rule's matrix. Values go in and out in mm. A rule copied from a real export comes back byte-identical.
+
+  ```
+  python tools/rules_rul.py list <board.PcbDoc>
+  python tools/rules_rul.py copy <board.PcbDoc> house.RUL --names "Clearance_Via and Pad,Clearance_out"
+  python tools/rules_rul.py new hv.RUL --name Clearance_HV --gap 0.5 --scope1 "InNetClass('HV')" --cell Track-Poly=1.0
+  ```
+
 - `plan_script.py`: Assembles the dump and apply scripts from `tools/snippets/`. The MCP tools above call it; in a session where those tools are not loaded, print the script and paste it into `run_altium_script`.
 
 - `trace_width.py`: Width a current needs, per IPC-2221, using the copper thickness read from that board's own stackup. Always answers for outer and inner layers together, since the two differ by roughly three times and quoting one invites a wrong assumption about the other. `--width` runs it backwards: what a given trace carries.
