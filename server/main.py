@@ -1251,6 +1251,12 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
              failure the last step reached plus whether Altium's script
              executor is now wedged and needs recovery.
     """
+    return await _run_sandbox(script, timeout_seconds)
+
+
+async def _run_sandbox(script: str, timeout_seconds: int = 120) -> str:
+    """run_altium_script 의 본체. dump_copper / apply_plan 처럼 스크립트를 서버에서
+    조립하는 도구가 같이 쓴다. 반환은 run_altium_script 와 같은 JSON 문자열."""
     logger.info(f"run_altium_script: {len(script.splitlines())} lines")
 
     if not SANDBOX_TEMPLATE.exists() or not SANDBOX_PRJ.exists():
@@ -1373,6 +1379,133 @@ async def run_altium_script(ctx: Context, script: str, timeout_seconds: int = 12
                      "Check Altium's script editor for a paused line; stop it (Ctrl+F3) "
                      "or restart Altium."),
         "dialogs_dismissed": dialogs}, indent=2)
+
+
+def _plan_script():
+    """tools/plan_script.py (덤프·적용 스크립트 조립). 서버와 명령줄이 같은 코드를 쓴다."""
+    tools_dir = str(Path(__file__).resolve().parent.parent / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import plan_script
+    return plan_script
+
+
+@mcp.tool()
+async def dump_copper(ctx: Context, out_path: str, board: str = "", timeout_seconds: int = 45) -> str:
+    """
+    Dump a PCB's outline, components and copper (vias, tracks, arcs, pads with
+    net and selection state) to a text file, in ONE Altium call.
+
+    This is the input for the routing tools in tools/ (route_lib.load_board,
+    fanout.py, corner_arcs.py, offset_lanes.py, mirror_board.py, ...). It
+    replaces pasting tools/snippets/dump_copper.pas into run_altium_script.
+
+    Coordinates are mm relative to the board origin. Polygon-pour primitives
+    and footprint-owned tracks/arcs are left out (they are not routing).
+
+    If the board is SAVED and you do not need the selection state, you do not
+    need Altium at all: the tools accept a .PcbDoc path directly
+    (tools/pcbdoc_dump.py). Use this tool when the board has unsaved edits or
+    the task is about "the selected objects". Always dump right before applying
+    a plan - a stale dump leads to a partial apply.
+
+    Args:
+        out_path (str): Where to write the dump (absolute path).
+        board (str): Which board. Empty = the focused board. A full .PcbDoc path
+            = that document even when it is not focused (it must be open in
+            Altium). A file-name fragment such as "HEAD_RIGHT" = the focused
+            board, but only if its path contains that text.
+        timeout_seconds (int): Default 45.
+
+    Returns:
+        str: JSON with success, lines (number of dump lines), board (file name),
+             out_path. If the requested board is not available: success false
+             and error "NO BOARD" - nothing was read.
+    """
+    ps = _plan_script()
+    try:
+        script = ps.dump_script(out_path, board or None, str(EXCHANGE_DIR))
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"could not build script: {e}"})
+    raw = json.loads(await _run_sandbox(script, timeout_seconds))
+    if not raw.get("success"):
+        return json.dumps(raw, indent=2)
+    text = raw.get("result", "")
+    if text.startswith("NO BOARD"):
+        return json.dumps({"success": False, "error": "NO BOARD",
+                           "detail": f"board '{board}' is not open or not the focused board"}, indent=2)
+    count, _, name = text.partition("|")
+    try:
+        lines = int(count.strip())
+    except ValueError:
+        return json.dumps({"success": False, "error": "unexpected result", "raw": raw}, indent=2)
+    return json.dumps({"success": True, "lines": lines, "board": name.strip(),
+                       "out_path": out_path}, indent=2)
+
+
+@mcp.tool()
+async def apply_plan(ctx: Context, new_path: str = "", del_path: str = "", board: str = "",
+                     delete_first: bool = False, max_delete: int = -1,
+                     expect_removed: int = -1, timeout_seconds: int = 45) -> str:
+    """
+    Apply a routing plan (files written by tools/route_lib.write_plan and the
+    routing tools) to a PCB in ONE Altium call, as one undo step.
+
+    It replaces pasting tools/snippets/apply_plan.pas into run_altium_script.
+    Deletion collects the matching objects in a single pass and removes them
+    after the iterator is closed, so hundreds of objects fit in the timeout.
+
+    PASS `board` WHENEVER YOU MODIFY A BOARD. Without it the plan is applied to
+    whatever board is focused at that moment - the user may have switched to
+    another board since the dump was taken.
+
+    Args:
+        new_path (str): new.txt - objects to create (8 lines each). Empty = none.
+        del_path (str): del.txt - keys of objects to delete. Empty = none.
+        board (str): Same meaning as in dump_copper. A full .PcbDoc path targets
+            that document even when it is not focused.
+        delete_first (bool): False (default) creates, then deletes - needed when
+            a via being "moved" is its own template. True deletes first - needed
+            when objects are re-created at the SAME coordinates with a different
+            net (tools/mirror_board.py plans).
+        max_delete (int): Safety cap. If more objects than this match the keys,
+            nothing is deleted. Default: the number of keys.
+        expect_removed (int): Number of objects the plan intends to delete (the
+            first number route_lib.write_plan returns). When given, a different
+            count is reported as a mismatch.
+        timeout_seconds (int): Default 45.
+
+    Returns:
+        str: JSON with success, created, removed, expected_created,
+             expected_removed, mismatch (true = partially applied - stop and
+             tell the user), board, and the script's step log (lines such as
+             "NO NET x", "NO VIA TEMPLATE x,y" explain a shortfall).
+    """
+    ps = _plan_script()
+    try:
+        script = ps.apply_script(new_path or None, del_path or None, delete_first,
+                                 None if max_delete < 0 else max_delete, board or None,
+                                 str(EXCHANGE_DIR))
+        expected_created = ps.count_new(new_path) if new_path and os.path.exists(new_path) else 0
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"could not build script: {e}"})
+    raw = json.loads(await _run_sandbox(script, timeout_seconds))
+    if not raw.get("success"):
+        return json.dumps(raw, indent=2)
+    if raw.get("result", "").startswith("NO BOARD"):
+        return json.dumps({"success": False, "error": "NO BOARD",
+                           "detail": f"board '{board}' is not open or not the focused board - "
+                                     f"nothing was changed"}, indent=2)
+    out = ps.parse_result(raw.get("result", ""))
+    if "created" not in out:
+        return json.dumps({"success": False, "error": "unexpected result", "raw": raw}, indent=2)
+    mismatch = out["created"] != expected_created or (expect_removed >= 0 and out["removed"] != expect_removed)
+    return json.dumps({"success": True, "created": out["created"], "removed": out["removed"],
+                       "expected_created": expected_created,
+                       "expected_removed": expect_removed if expect_removed >= 0 else None,
+                       "mismatch": mismatch, "board": out.get("board", ""),
+                       "steps": [s for s in raw.get("steps", []) if not s.startswith(("sandbox", "##run:"))]},
+                      indent=2)
 
 
 @mcp.tool()

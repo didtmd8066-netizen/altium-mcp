@@ -214,6 +214,8 @@ The cool thing about layout duplication this way as opposed to with Altium's bui
 
 ### Scripting / Development
 - `run_altium_script`: Run a DelphiScript snippet in an **isolated sandbox script project** and get back a step-by-step log, the script's result, and - when a script dies - the exact statement that killed it. Altium has no headless test mode: a runtime error leaves the script paused in the debugger with no dialog, after which every later run silently does nothing until the debugger is stopped (Ctrl+F3) or Altium restarts. This tool detects that state and reports it. Because the sandbox is a separate script project, a crash can never break the other MCP tools. Useful for developing and verifying new Altium API code before building a tool around it.
+- `dump_copper`: Dump a board's outline, components and copper (vias, tracks, arcs, pads - with net and selection state) to a text file in one call. This is the input every routing helper in `tools/` reads. Polygon-pour primitives and footprint-owned tracks are left out. `board` picks the document: empty for the focused board, a full `.PcbDoc` path for a document that is open but not focused, or a file-name fragment that the focused board's path must contain.
+- `apply_plan`: Apply a plan written by the routing helpers (`new.txt` / `del.txt`) in one call and one undo step, and report created/removed against what the plan expected. Deletion collects matches in a single pass and removes them after the iterator is closed, so a plan of several hundred objects finishes in a few seconds. Pass `board` whenever a board is modified - without it the plan lands on whatever board happens to be focused, and the user may have moved on since the dump. `delete_first` is for plans that re-create objects at the same coordinates with a different net.
 - `ensure_altium_script_skill`: Check whether the [altium-script skill](https://github.com/coffeenmusic/altium-scripts-skill) (Altium DelphiScript API reference, examples, and conventions) is installed, and install it on request. Skills load at client startup, so a newly installed skill appears after a restart.
 
 ### Server Status
@@ -231,6 +233,35 @@ Not MCP tools - plain scripts that run against files on disk, with Altium closed
   ```
 
   Records inside the file are pipe-delimited text separated by NUL bytes. Split on NUL *before* pulling fields - a regex run over the whole file lets one record's values bleed into the next. Dimensions come out in mm; copper thickness also carries oz.
+
+- `pcbdoc_dump.py`: Produce the same copper dump as the `dump_copper` MCP tool, straight from a saved `.PcbDoc` - no Altium call, so nothing to wedge and no interruption for a user working on another board. Every routing helper accepts a `.PcbDoc` path wherever it takes a dump. It reads the state on disk, so unsaved edits are invisible, and the file carries no selection state; use `dump_copper` for "the selected objects" and right before applying a plan.
+
+  ```
+  python tools/pcbdoc_dump.py <board.PcbDoc> dump.txt
+  ```
+
+- `mirror_board.py`: For a left/right pair of boards, mirror the reference board's routing and compare it with the other board: same, same place but wrong or missing net, missing, or only on the target. Nets are paired through pad positions (`CHEEK_L_LED3` -> `CHEEK_R_LED3`), not by naming convention, so reversed connector pin numbering does not matter. Collinear pieces are merged on both sides first, so a line drawn as one track here and two there is not reported. With `--out` it writes a plan that re-creates wrong-net copper with the right net and adds what is missing; `--sync` also removes what only the target has. Apply with `apply_plan(..., delete_first=True)`.
+
+  ```
+  python tools/mirror_board.py <left.PcbDoc> <right.PcbDoc>
+  python tools/mirror_board.py <left.PcbDoc> right_dump.txt --out plan
+  ```
+
+  Comparing two saved files takes well under a second and never touches Altium, which makes it a cheap check after mirroring a board by hand.
+
+- `board_check.py`: One pass over a board before it is handed on: clearance between different nets, copper too close to the outline, copper with no net, debris (near-zero tracks and arcs, stacked duplicates), track ends that touch nothing, nets whose pads are not all joined, and - with `--fpcb` - angular corners and arcs that do not meet their lines tangentially. Clearance is measured exactly, as centreline distance minus the two half-widths, because the violations worth finding are the invisible ones: two concentric arcs whose centres differ by 0.0007 mm leave a 0.1996 mm gap that a polygon-approximated check passes and Altium's DRC does not. It applies a single clearance value rather than the board's rules, so it screens before DRC, not instead of it.
+
+  ```
+  python tools/board_check.py <board.PcbDoc> --fpcb
+  ```
+
+- `stitch_vias.py`: Plan stitching vias along the outline. `--land-gap` is the distance from the outline to the edge of the via land (default 0.51 mm), not to its centre. Stations are spaced evenly round the perimeter; a station that cannot take a via is skipped, never nudged, and the stretches left bare are listed. Pads are avoided by their real rotated shape, and a via is never put on a pad even of its own net. `--redo` replaces vias placed by an earlier run and leaves alone those whose position does not change. Writes `del.txt` / `new.txt` for `apply_plan`.
+
+  ```
+  python tools/stitch_vias.py <board.PcbDoc> plan --redo --land-gap 0.51
+  ```
+
+- `plan_script.py`: Assembles the dump and apply scripts from `tools/snippets/`. The MCP tools above call it; in a session where those tools are not loaded, print the script and paste it into `run_altium_script`.
 
 - `trace_width.py`: Width a current needs, per IPC-2221, using the copper thickness read from that board's own stackup. Always answers for outer and inner layers together, since the two differ by roughly three times and quoting one invites a wrong assumption about the other. `--width` runs it backwards: what a given trace carries.
 

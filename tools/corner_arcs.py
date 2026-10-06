@@ -102,8 +102,13 @@ def corners_from_selection(objs):
     return out
 
 
-def scan(objs):
-    f = lambda p: f'({p[0]:.2f}, {p[1]:.2f})'
+def find_kinks(objs):
+    """층별로 어색한 곳을 찾는다. 반환: {층: dict(sharp, kink, deg, tiny)}.
+
+    sharp  직선과 직선이 각지게 꺾인 곳 [(넷, 점, 각도)]     kink  아크와 직선이 접하지 않는 곳
+    deg    길이 0 에 가까운 아크 (2 도 미만)                 tiny  0.01mm 미만 트랙
+    """
+    out = {}
     for lay in (rl.BOT, rl.TOP):
         el = [o for o in objs if o.layer == lay and o.kind in 'TA' and o.net]
         deg = [a for a in el if a.kind == 'A' and sweep(a) < 2]
@@ -130,6 +135,14 @@ def scan(objs):
                                 dv =abs((out_dir(o, p) - out_dir(o2, p2) - 180 + 180) % 360 - 180)
                                 if dv > 3 and dv < 177:
                                     (sharp if o.kind == o2.kind == 'T' else kink).append((net, p, dv))
+        out[lay] = dict(sharp=sharp, kink=kink, deg=deg, tiny=tiny)
+    return out
+
+
+def scan(objs):
+    f = lambda p: f'({p[0]:.2f}, {p[1]:.2f})'
+    for lay, k in find_kinks(objs).items():
+        sharp, kink, deg, tiny = k['sharp'], k['kink'], k['deg'], k['tiny']
         if not (deg or tiny or sharp or kink):
             continue
         print(f'[{lay}]')

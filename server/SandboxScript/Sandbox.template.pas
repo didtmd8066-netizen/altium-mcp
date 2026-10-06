@@ -19,10 +19,10 @@ var
     // passed to the tool reuse these rather than declaring their own.
     // List1 is CREATED before the script body runs - it used to be declared
     // only, so the first `List1.Add(...)` died on a nil reference.
-    S1, S2, S3 : String;
+    S1, S2, S3, S4 : String;
     I1, I2, I3 : Integer;
     B1         : Integer;
-    Obj1, Obj2, Obj3, Obj4, Obj5 : IDispatch;
+    Obj1, Obj2, Obj3, Obj4, Obj5, Obj6 : IDispatch;
     // 타입이 있어야 하는 것들. Altium 의 PCB 인터페이스는 IDispatch 로 늦은 바인딩이
     // 되지 않아, IDispatch 스크래치로는 LayerStack_V7.FirstLayer 같은 프로퍼티 접근이
     // 조용히 죽는다. 레이어 스택을 다루려면 아래 타입 변수를 쓸 것.
@@ -46,6 +46,9 @@ var
     Prj1       : IProject;
     Doc1       : IDocument;
     List1      : TStringList;
+    // 순회 중에는 객체를 지울 수 없다. 여기에 모아 두고 iterator 를 닫은 뒤 지운다
+    // (apply_plan.pas). OwnsObjects 는 False - 목록을 비워도 PCB 객체는 건드리지 않는다.
+    OList1     : TObjectList;
     IntMan     : IIntegratedLibraryManager;
     DbDoc      : IDatabaseLibDocument;
 
@@ -64,6 +67,8 @@ begin
     OutPath := 'C:\Users\Public\altium_mcp\sandbox_result.json';
     LogLines := TStringList.Create;
     List1 := TStringList.Create;
+    OList1 := TObjectList.Create;
+    OList1.OwnsObjects := False;
     ResultText := '{"sandbox": "no result set"}';
     SandboxLog('sandbox start');
 
