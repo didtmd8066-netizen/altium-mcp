@@ -6,6 +6,8 @@ MCP 도구 `dump_copper` / `apply_plan` 이 이 모듈을 쓴다. 그 도구들�
 
     python plan_script.py dump <out.txt> [--board 보드]
     python plan_script.py apply [--new new.txt] [--del del.txt] [--delete-first] [--max-delete N] [--board 보드]
+    python plan_script.py components <out.txt> [--board 보드]     부품 배치용 덤프 (MCP dump_components)
+    python plan_script.py moves <move.txt> [--board 보드]          부품 이동 적용 (MCP apply_component_moves)
 
 --board
 -------
@@ -100,6 +102,52 @@ def dump_script(out, board=None, workdir=None):
     return text.replace('{BOARD}', '\n'.join(board_block(board, workdir))).replace('{OUT}', _q(out))
 
 
+def components_script(out, board=None, workdir=None):
+    """부품 배치용 덤프 (snippets/dump_components.pas): 외곽과 부품별 3D 바디·패드 범위."""
+    text = '\n'.join(ln for ln in _body('dump_components.pas') if not ln.strip().startswith('//'))
+    return text.replace('{BOARD}', '\n'.join(board_block(board, workdir))).replace('{OUT}', _q(out))
+
+
+def moves_script(moves, board=None, workdir=None):
+    """부품 이동 적용 (snippets/move_components.pas)."""
+    if not os.path.exists(moves) or count_keys(moves) == 0:
+        raise ValueError('옮길 부품이 없다')
+    text = '\n'.join(ln for ln in _body('move_components.pas') if not ln.strip().startswith('//'))
+    return text.replace('{BOARD}', '\n'.join(board_block(board, workdir))).replace('{MOVES}', _q(moves))
+
+
+def parse_moved(text):
+    """'moved 611 / skipped 0 | 보드.PcbDoc' -> dict. 형식이 다르면 raw 만."""
+    out = {'raw': text}
+    try:
+        counts, _, name = text.partition('|')
+        m, k = counts.split('/')
+        out.update(moved=int(m.split()[1]), skipped=int(k.split()[1]), board=name.strip())
+    except (ValueError, IndexError):
+        pass
+    return out
+
+
+def descriptions_script(plan, readback=None):
+    """회로도 Description 적용 (snippets/set_sch_descriptions.pas). readback 을 주면 다시 읽는 쪽 스크립트."""
+    if not os.path.exists(plan) or count_keys(plan) == 0:
+        raise ValueError('바꿀 Description 이 없다')
+    b = _blocks(_body('set_sch_descriptions.pas'))
+    text = '\n'.join(b['READ'] if readback else b['APPLY']).replace('{PLAN}', _q(plan))
+    return text.replace('{OUT}', _q(readback)) if readback else text
+
+
+def parse_described(text):
+    """'set 514 / same 16' -> dict. 형식이 다르면 raw 만."""
+    out = {'raw': text}
+    try:
+        s, k = text.split('/')
+        out.update(changed=int(s.split()[1]), same=int(k.split()[1]))
+    except (ValueError, IndexError):
+        pass
+    return out
+
+
 def count_new(new):
     """new.txt 의 객체 수 (8줄에 하나)."""
     with open(new, encoding='utf-8') as f:
@@ -107,7 +155,7 @@ def count_new(new):
 
 
 def count_keys(dele):
-    with open(dele, encoding='utf-8') as f:
+    with open(dele, encoding='utf-8', errors='replace') as f:
         return sum(1 for ln in f if ln.strip())
 
 
@@ -150,9 +198,18 @@ def main():
     a = sub.add_parser('apply')
     a.add_argument('--new'); a.add_argument('--del', dest='dele'); a.add_argument('--delete-first', action='store_true')
     a.add_argument('--max-delete', type=int); a.add_argument('--board')
+    c = sub.add_parser('components'); c.add_argument('out'); c.add_argument('--board')
+    m = sub.add_parser('moves'); m.add_argument('moves'); m.add_argument('--board')
+    s = sub.add_parser('descriptions'); s.add_argument('plan'); s.add_argument('--readback')
     args = ap.parse_args()
-    if args.cmd == 'dump':
+    if args.cmd == 'descriptions':
+        print(descriptions_script(args.plan, args.readback))
+    elif args.cmd == 'dump':
         print(dump_script(args.out, args.board))
+    elif args.cmd == 'components':
+        print(components_script(args.out, args.board))
+    elif args.cmd == 'moves':
+        print(moves_script(args.moves, args.board))
     else:
         print(apply_script(args.new, args.dele, args.delete_first, args.max_delete, args.board))
 

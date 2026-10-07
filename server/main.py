@@ -1571,6 +1571,143 @@ async def apply_plan(ctx: Context, new_path: str = "", del_path: str = "", board
 
 
 @mcp.tool()
+async def dump_components(ctx: Context, out_path: str, board: str = "", timeout_seconds: int = 45) -> str:
+    """
+    Dump the board outline and, for every component, its position plus the
+    extents of its 3D bodies, its pads and its whole footprint, in ONE call.
+
+    Input for tools/sheet_groups.py (lay unplaced parts out beside the board in
+    one cluster per schematic sheet). Read-only. Designators can repeat on an
+    un-annotated design (R?, Q?), which is why every line carries coordinates.
+
+    Args:
+        out_path (str): Where to write the dump (absolute path).
+        board (str): Empty = the focused board; a full .PcbDoc path = that
+            document even when it is not focused; a file-name fragment = the
+            focused board only if its path contains that text.
+        timeout_seconds (int): Default 45.
+
+    Returns:
+        str: JSON with success, lines, board, out_path - or error "NO BOARD".
+    """
+    ps = _plan_script()
+    try:
+        script = ps.components_script(out_path, board or None, str(EXCHANGE_DIR))
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"could not build script: {e}"})
+    raw = json.loads(await _run_sandbox(script, timeout_seconds))
+    if not raw.get("success"):
+        return json.dumps(raw, indent=2)
+    text = raw.get("result", "")
+    if text.startswith("NO BOARD"):
+        return json.dumps({"success": False, "error": "NO BOARD",
+                           "detail": f"board '{board}' is not open or not the focused board"}, indent=2)
+    count, _, name = text.partition("|")
+    try:
+        lines = int(count.strip())
+    except ValueError:
+        return json.dumps({"success": False, "error": "unexpected result", "raw": raw}, indent=2)
+    return json.dumps({"success": True, "lines": lines, "board": name.strip(), "out_path": out_path}, indent=2)
+
+
+@mcp.tool()
+async def apply_component_moves(ctx: Context, moves_path: str, board: str = "", timeout_seconds: int = 45) -> str:
+    """
+    Move components to the positions in a move list (written by
+    tools/sheet_groups.py) in ONE call and one undo step. Rotation and board
+    side are left alone.
+
+    Each line is `designator|new x mm|new y mm|current x um|current y um`. A
+    component whose current position no longer matches the dump is SKIPPED -
+    the user moved it since. Components with a repeated designator are found by
+    their coordinates.
+
+    PASS `board` - without it the moves land on whatever board is focused.
+
+    Args:
+        moves_path (str): The move list (absolute path).
+        board (str): Same meaning as in dump_components.
+        timeout_seconds (int): Default 45.
+
+    Returns:
+        str: JSON with success, moved, skipped, expected (lines in the list),
+             mismatch (true when moved != expected), board, and the step log
+             (a "skipped: ..." line names what was left alone).
+    """
+    ps = _plan_script()
+    try:
+        script = ps.moves_script(moves_path, board or None, str(EXCHANGE_DIR))
+        expected = ps.count_keys(moves_path)
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"could not build script: {e}"})
+    raw = json.loads(await _run_sandbox(script, timeout_seconds))
+    if not raw.get("success"):
+        return json.dumps(raw, indent=2)
+    if raw.get("result", "").startswith("NO BOARD"):
+        return json.dumps({"success": False, "error": "NO BOARD",
+                           "detail": f"board '{board}' is not open or not the focused board - "
+                                     f"nothing was changed"}, indent=2)
+    out = ps.parse_moved(raw.get("result", ""))
+    if "moved" not in out:
+        return json.dumps({"success": False, "error": "unexpected result", "raw": raw}, indent=2)
+    return json.dumps({"success": True, "moved": out["moved"], "skipped": out["skipped"],
+                       "expected": expected, "mismatch": out["moved"] != expected,
+                       "board": out.get("board", ""),
+                       "steps": [s for s in raw.get("steps", []) if not s.startswith(("sandbox", "##run:"))]},
+                      indent=2)
+
+
+@mcp.tool()
+async def apply_sch_descriptions(ctx: Context, plan_path: str, timeout_seconds: int = 45) -> str:
+    """
+    Set the Description of schematic components from a plan file (written by
+    tools/sch_description.py, which unifies chip R/C descriptions to what the
+    schematic shows, e.g. "RES 10K OHM 0402"), then read every description back
+    in a SECOND Altium call and compare it with the plan.
+
+    The plan is grouped per sheet (`#<full SchDoc path>` followed by
+    `designator=new description` lines), so designators repeated across sheets
+    do not mix. Sheets must be open in Altium; a sheet that is not open is
+    skipped and reported. Components that already carry the new text are not
+    touched, so re-running a plan does not mark documents modified. One undo
+    step per sheet. Documents are NOT saved - the user reviews and saves.
+
+    Args:
+        plan_path (str): The plan file (absolute path).
+        timeout_seconds (int): Default 45, per Altium call.
+
+    Returns:
+        str: JSON with success, changed, same (already had the text), expected
+             (plan lines), verified (read back equal), wrong and missing (first
+             20 each), not_open (sheet names).
+    """
+    ps = _plan_script()
+    import sch_description as sd
+    readback = str(EXCHANGE_DIR / "sch_description_readback.txt")
+    try:
+        apply_text = ps.descriptions_script(plan_path)
+        read_text = ps.descriptions_script(plan_path, readback)
+    except Exception as e:
+        return json.dumps({"success": False, "error": f"could not build script: {e}"})
+    raw = json.loads(await _run_sandbox(apply_text, timeout_seconds))
+    if not raw.get("success"):
+        return json.dumps(raw, indent=2)
+    out = ps.parse_described(raw.get("result", ""))
+    if "changed" not in out:
+        return json.dumps({"success": False, "error": "unexpected result", "raw": raw}, indent=2)
+    not_open = [s[9:] for s in raw.get("steps", []) if s.startswith("notopen: ")]
+    back = json.loads(await _run_sandbox(read_text, timeout_seconds))
+    if not back.get("success"):
+        return json.dumps({"success": False, "error": "descriptions were set but the read-back failed",
+                           "changed": out["changed"], "same": out["same"], "raw": back}, indent=2)
+    v = sd.verify(plan_path, readback)
+    return json.dumps({"success": not v["wrong"] and not v["missing"], "changed": out["changed"], "same": out["same"],
+                       "expected": v["expected"], "verified": v["ok"],
+                       "wrong": v["wrong"][:20], "missing": v["missing"][:20], "not_open": not_open},
+                      indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
 async def ensure_altium_script_skill(ctx: Context, install: bool = False) -> str:
     """
     Check whether the "altium-script" skill is installed, and optionally

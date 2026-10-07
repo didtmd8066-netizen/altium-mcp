@@ -193,6 +193,9 @@ The cool thing about layout duplication this way as opposed to with Altium's bui
 - `run_altium_script`: Run a DelphiScript snippet in an **isolated sandbox script project** and get back a step-by-step log, the script's result, and - when a script dies - the exact statement that killed it. Altium has no headless test mode: a runtime error leaves the script paused in the debugger with no dialog, after which every later run silently does nothing until the debugger is stopped (Ctrl+F3) or Altium restarts. This tool detects that state and reports it. Because the sandbox is a separate script project, a crash can never break the other MCP tools. Useful for developing and verifying new Altium API code before building a tool around it.
 - `dump_copper`: Dump a board's outline, components and copper (vias, tracks, arcs, pads - with net and selection state) to a text file in one call. This is the input every routing helper in `tools/` reads. Polygon-pour primitives and footprint-owned tracks are left out. `board` picks the document: empty for the focused board, a full `.PcbDoc` path for a document that is open but not focused, or a file-name fragment that the focused board's path must contain.
 - `apply_plan`: Apply a plan written by the routing helpers (`new.txt` / `del.txt`) in one call and one undo step, and report created/removed against what the plan expected. Deletion collects matches in a single pass and removes them after the iterator is closed, so a plan of several hundred objects finishes in a few seconds. Pass `board` whenever a board is modified - without it the plan lands on whatever board happens to be focused, and the user may have moved on since the dump. `delete_first` is for plans that re-create objects at the same coordinates with a different net.
+- `dump_components`: Dump the board outline and, per component, its position and the extents of its 3D bodies, pads and whole footprint. Read-only; the input for `tools/sheet_groups.py`.
+- `apply_component_moves`: Move components to the positions in a move list, in one call and one undo step, leaving rotation and side alone. A component that has moved since the dump is skipped rather than dragged back; components sharing a designator (`R?`, `Q?` on an un-annotated design) are found by their coordinates.
+- `apply_sch_descriptions`: Set the Description of schematic components from a plan file written by `tools/sch_description.py`, then read every description back in a second call and compare it with the plan. The plan is grouped per sheet, so designators repeated across sheets do not mix. Components that already carry the new text are not touched, one undo step per sheet, and nothing is saved.
 - `ensure_altium_script_skill`: Check whether the [altium-script skill](https://github.com/coffeenmusic/altium-scripts-skill) (Altium DelphiScript API reference, examples, and conventions) is installed, and install it on request. Skills load at client startup, so a newly installed skill appears after a restart.
 
 ### Server Status
@@ -238,6 +241,22 @@ Not MCP tools - plain scripts that run against files on disk, with Altium closed
   python tools/stitch_vias.py <board.PcbDoc> plan --redo --land-gap 0.51
   ```
 
+- `sheet_groups.py`: Take the heap of parts an ECO leaves beside the board and lay it out as one cluster per schematic sheet, so placement starts from blocks instead of a pile. Parts already on the board are left where they are. Each part is sized by its 3D body together with its pads - pads alone let large bodies (D2PAK, connectors, electrolytics) land on their neighbours. Parts with a repeated designator go into their own cluster. The overlap check runs over every component, including those that do not move, and the move list is not written if anything overlaps.
+
+  ```
+  python tools/sheet_groups.py components_dump.txt <project folder> moves.txt
+  ```
+
+  `dump_components` -> this script -> `apply_component_moves`.
+
+- `sch_description.py`: Give every chip resistor and capacitor the same Description shape for the BOM (`RES 10K OHM 0402`, `CAP CER 100nF 50V 0603`), built only from what the schematic shows. Parts copied and re-valued keep the original part's Description and hidden parameters, so neither can be trusted. The resistor value is the visible `Resistance` if there is one, otherwise `Comment`, copied as written; `DNP` stands in for the value where that is what the sheet shows. Parts with no visible size (electrolytics, power resistors) are left alone, and parts whose value cannot be read are listed instead of guessed. Reads the saved `.SchDoc` files without Altium - save first.
+
+  ```
+  python tools/sch_description.py <project folder | .PrjPcb | .SchDoc ...> plan.txt --csv before_after.csv
+  ```
+
+  This script -> `apply_sch_descriptions`.
+
 - `rules_rul.py`: Write design rules as a `.RUL` file for `Design > Rules > Import Rules`, including the Advanced clearance matrix (a different gap per object-kind pair), which scripts cannot read or write - `create_pcb_clearance_rule` can only make single-value rules. `copy` lifts rules out of a board or another `.RUL` (optionally changing individual cells or the default gap on the way); `new` builds a clearance rule from a name, scopes, a default gap and the cells that differ, optionally starting from an existing rule's matrix. Values go in and out in mm. A rule copied from a real export comes back byte-identical.
 
   ```
@@ -247,6 +266,8 @@ Not MCP tools - plain scripts that run against files on disk, with Altium closed
   ```
 
 - `plan_script.py`: Assembles the dump and apply scripts from `tools/snippets/`. The MCP tools above call it; in a session where those tools are not loaded, print the script and paste it into `run_altium_script`.
+
+- `snippets/set_sch_footprints.pas`: Replace the footprint model of schematic components from a per-sheet `designator=footprint` plan (same file shape as the description plan), and read every component's models back in a second call. Existing PCBLIB models are removed and the new name is added as the only, current one. Not wired into `plan_script.py` yet: fill in `{PLAN}` / `{OUT}` and paste each block into `run_altium_script`.
 
 - `trace_width.py`: Width a current needs, per IPC-2221, using the copper thickness read from that board's own stackup. Always answers for outer and inner layers together, since the two differ by roughly three times and quoting one invites a wrong assumption about the other. `--width` runs it backwards: what a given trace carries.
 
