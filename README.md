@@ -265,6 +265,12 @@ Not MCP tools - plain scripts that run against files on disk, with Altium closed
   python tools/rules_rul.py new hv.RUL --name Clearance_HV --gap 0.5 --scope1 "InNetClass('HV')" --cell Track-Poly=1.0
   ```
 
+- `land_check.py`: Find vias and through-hole pads whose land was removed on a layer where same-net polygon copper still reaches the hole. Remove Unused Pad Shapes run over stale pours leaves these behind, and because the net is joined on other layers the Un-Routed Net check passes them. Reported in two groups: copper touching only part of the hole wall (a pour edge crossing the hole, or thermal spokes ending on the bare barrel), and copper fully surrounding a hole whose land is gone. Reads the saved `.PcbDoc` without Altium - save first. Exit code 1 if anything is found.
+
+  ```
+  python tools/land_check.py <board.PcbDoc> --csv found.csv
+  ```
+
 - `plan_script.py`: Assembles the dump and apply scripts from `tools/snippets/`. The MCP tools above call it; in a session where those tools are not loaded, print the script and paste it into `run_altium_script`.
 
 - `snippets/set_sch_footprints.pas`: Replace the footprint model of schematic components from a per-sheet `designator=footprint` plan (same file shape as the description plan), and read every component's models back in a second call. Existing PCBLIB models are removed and the new name is added as the only, current one. Not wired into `plan_script.py` yet: fill in `{PLAN}` / `{OUT}` and paste each block into `run_altium_script`.
