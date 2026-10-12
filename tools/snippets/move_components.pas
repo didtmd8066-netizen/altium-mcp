@@ -77,6 +77,18 @@ begin
   end;
 end;
 PCBServer.PostProcess;
+// 넷을 다시 분석하지 않으면 연결선(ratsnest)이 옮기기 전 자리에 남는다.
+Obj1 := Brd1.BoardIterator_Create;
+Obj1.AddFilter_ObjectSet(MkSet(eNetObject));
+Obj1.AddFilter_LayerSet(AllLayers);
+Obj1.AddFilter_Method(eProcessAll);
+Obj2 := Obj1.FirstPCBObject;
+while Obj2 <> nil do
+begin
+  Brd1.AnalyzeNet(Obj2);
+  Obj2 := Obj1.NextPCBObject;
+end;
+Brd1.BoardIterator_Destroy(Obj1);
 Brd1.ViewManager_FullUpdate;
 if S4 <> '' then SandboxLog('skipped: ' + S4);
 ResultText := 'moved ' + IntToStr(I2) + ' / skipped ' + IntToStr(I3) + ' | ' + ExtractFileName(Brd1.FileName);
